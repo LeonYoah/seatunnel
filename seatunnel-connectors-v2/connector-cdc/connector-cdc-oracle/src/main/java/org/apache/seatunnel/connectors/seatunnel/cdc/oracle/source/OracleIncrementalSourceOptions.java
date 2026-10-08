@@ -76,4 +76,27 @@ public class OracleIncrementalSourceOptions extends JdbcSourceOptions {
                     .booleanType()
                     .defaultValue(false)
                     .withDescription("Skip the analysis of table count in full stage");
+
+    public static final Option<Boolean> LOB_RESELECT_ENABLED =
+            Options.key("lob.reselect.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "When true, INSERT and UPDATE_AFTER rows re-select CLOB, NCLOB, and BLOB columns"
+                                    + " whose value is Debezium's unavailable-value placeholder. The lookup uses the"
+                                    + " primary key and, when source.commit_scn is present, AS OF SCN. DELETE and"
+                                    + " UPDATE_BEFORE placeholders are always replaced with null. Requires SELECT on"
+                                    + " the table and FLASHBACK ANY TABLE, or FLASHBACK on the table, for the"
+                                    + " committed image. Set false to skip the query and use"
+                                    + " lob.unavailable-value.handling.");
+
+    public static final Option<OracleLobUnavailableValueHandling> LOB_UNAVAILABLE_VALUE_HANDLING =
+            Options.key("lob.unavailable-value.handling")
+                    .enumType(OracleLobUnavailableValueHandling.class)
+                    .defaultValue(OracleLobUnavailableValueHandling.NULL)
+                    .withDescription(
+                            "What to do when a LOB unavailable-value placeholder cannot be re-selected."
+                                    + " null replaces it with null so the sentinel is not written as data."
+                                    + " fail stops the task. warn_and_keep logs a warning and keeps the"
+                                    + " placeholder. DELETE and UPDATE_BEFORE placeholders are always null.");
 }

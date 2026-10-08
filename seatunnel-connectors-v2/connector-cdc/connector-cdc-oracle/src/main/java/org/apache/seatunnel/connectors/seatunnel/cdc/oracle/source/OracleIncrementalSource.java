@@ -41,6 +41,9 @@ import org.apache.seatunnel.connectors.cdc.debezium.DeserializeFormat;
 import org.apache.seatunnel.connectors.cdc.debezium.row.DebeziumJsonDeserializeSchema;
 import org.apache.seatunnel.connectors.cdc.debezium.row.SeaTunnelRowDebeziumDeserializeSchema;
 import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.config.OracleSourceConfigFactory;
+import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.lob.JdbcOracleLobColumnReselector;
+import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.lob.OracleLobAwareDebeziumDeserializeSchema;
+import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.lob.OracleLobUnavailableValueHandler;
 import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.source.offset.RedoLogOffset;
 import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.source.offset.RedoLogOffsetFactory;
 import org.apache.seatunnel.connectors.seatunnel.jdbc.config.JdbcCommonOptions;
@@ -48,6 +51,7 @@ import org.apache.seatunnel.connectors.seatunnel.jdbc.config.JdbcCommonOptions;
 import org.apache.kafka.connect.data.Struct;
 
 import io.debezium.jdbc.JdbcConnection;
+import io.debezium.relational.RelationalDatabaseConnectorConfig;
 import io.debezium.relational.TableId;
 import io.debezium.relational.history.TableChanges;
 
@@ -170,7 +174,7 @@ public class OracleIncrementalSource<T> extends IncrementalSource<T, JdbcSourceC
         }
 
         String zoneId = config.get(JdbcSourceOptions.SERVER_TIME_ZONE);
-        return (DebeziumDeserializationSchema<T>)
+        SeaTunnelRowDebeziumDeserializeSchema rowSchema =
                 SeaTunnelRowDebeziumDeserializeSchema.builder()
                         .setTables(catalogTables)
                         .setServerTimeZone(ZoneId.of(zoneId))
@@ -179,6 +183,42 @@ public class OracleIncrementalSource<T> extends IncrementalSource<T, JdbcSourceC
                         .setSchemaChangeEventFilter(SchemaChangeEventFilter.fromConfig(config))
                         .setTableIdTableChangeMap(tableIdStructMap)
                         .build();
+        return (DebeziumDeserializationSchema<T>)
+                new OracleLobAwareDebeziumDeserializeSchema(
+                        rowSchema, createLobUnavailableValueHandler(config, debeziumProperties));
+    }
+
+    /**
+     * Builds the safety net that keeps Debezium's LOB placeholder out of sink rows. The placeholder
+     * string follows {@code unavailable.value.placeholder}. Re-select uses the same JDBC url and
+     * {@code database.pdb.name} as the capture connection.
+     */
+    private static OracleLobUnavailableValueHandler createLobUnavailableValueHandler(
+            ReadonlyConfig config, Map<String, String> debeziumProperties) {
+        String placeholder =
+                RelationalDatabaseConnectorConfig.DEFAULT_UNAVAILABLE_VALUE_PLACEHOLDER;
+        String pdbName = null;
+        if (debeziumProperties != null) {
+            String configuredPlaceholder =
+                    debeziumProperties.get(
+                            RelationalDatabaseConnectorConfig.UNAVAILABLE_VALUE_PLACEHOLDER.name());
+            if (configuredPlaceholder != null && !configuredPlaceholder.isEmpty()) {
+                placeholder = configuredPlaceholder;
+            }
+            pdbName = debeziumProperties.get("database.pdb.name");
+        }
+        boolean reselectEnabled = config.get(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED);
+        return new OracleLobUnavailableValueHandler(
+                placeholder,
+                config.get(OracleIncrementalSourceOptions.LOB_UNAVAILABLE_VALUE_HANDLING),
+                reselectEnabled,
+                reselectEnabled
+                        ? new JdbcOracleLobColumnReselector(
+                                config.get(SourceOptions.URL),
+                                config.get(JdbcSourceOptions.USERNAME),
+                                config.get(JdbcSourceOptions.PASSWORD),
+                                pdbName)
+                        : null);
     }
 
     @Override

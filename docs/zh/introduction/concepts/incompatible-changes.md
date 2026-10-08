@@ -4,6 +4,14 @@
 
 ## dev
 
+### Oracle CDC LOB 不可用值占位符
+
+- **行为变更：默认行格式不再下发 `__debezium_unavailable_value`**
+  - **影响范围**：`seatunnel-connectors-v2/connector-cdc/connector-cdc-oracle`
+  - **变更说明**：即使 `debezium.lob.enabled` 为 false 或未设置，快照中的 CLOB、NCLOB、BLOB 也会从 JDBC 定位器读取真实值。流式事件中 LOB 列上仍为 Debezium 不可用值占位符时，在 `lob.reselect.enabled` 为 true（默认）时按主键重新查询；存在 `commit_scn` 时使用 `AS OF SCN`。重新查询无法恢复值时，`lob.unavailable-value.handling`（默认 `null`）把剩余占位符替换为 null。`DELETE` 与 `UPDATE_BEFORE` 中的占位符始终为 null。
+  - **影响**：Sink 不再用该哨兵字符串覆盖已有 LOB 数据。此前期望在 SeaTunnel 行中看到 `__debezium_unavailable_value` 的作业，现在会收到重新查询到的值，或在查询失败时收到 null。`format = COMPATIBLE_DEBEZIUM_JSON` 不变，仍包含占位符。
+  - **迁移指南**：若要保持以前的透传行为，请设置 `lob.reselect.enabled = false` 与 `lob.unavailable-value.handling = warn_and_keep`。默认重新查询路径需要为 CDC 用户授予每张采集表上的 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。表需要主键，或在 `table-names-config` 中配置键。
+
 ### DuckDB BIT 和 ENUM 自动建表
 
 - Catalog 未提供长度时，标量 `BIT` 和 `ENUM` 列现在保留未指定的 STRING 长度，不再使用原来的 1/255 回退值。

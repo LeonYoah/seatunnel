@@ -255,8 +255,37 @@ exit;
 | schema-changes.enabled                    | Boolean  | 否      | false   | Schema 演进默认禁用。目前我们仅支持 `add column`、`drop column`、`rename column` 和 `modify column`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | schema-changes.include                     | List     | 否      | -       | 仅向下游发送列出的 schema change 事件类型（需 `schema-changes.enabled = true`）。为空表示全部允许。详见 [Schema change 事件过滤](#schema-change-事件过滤)。                                                                                                                                                                                                                                                                                                                          |
 | schema-changes.exclude                     | List     | 否      | -       | 此处列出的 schema change 事件类型不会发送到下游。在 `schema-changes.include` 之后应用；冲突时 exclude 优先。详见 [Schema change 事件过滤](#schema-change-事件过滤)。                                                                                                                                                                                                                                                                                                                   |
+| lob.reselect.enabled                      | Boolean  | 否      | true    | 对 INSERT 与 UPDATE_AFTER 中仍为 Debezium 不可用占位符的 CLOB、NCLOB、BLOB 列，按主键重新查询。事件带有 `commit_scn` 时使用 `AS OF SCN`。DELETE 与 UPDATE_BEFORE 中的占位符始终替换为 null。需要表上的 SELECT，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。设为 false 时跳过查询，改由 `lob.unavailable-value.handling` 处理。详见 [LOB 列](#lob-列)。                                                                                                                                                                                                                              |
+| lob.unavailable-value.handling            | Enum     | 否      | null    | 无法重新查询 LOB 占位符时的处理方式。`null` 将其替换为 null，避免把哨兵值写入下游。`fail` 使任务失败。`warn_and_keep` 记录一次警告并保留占位符。DELETE 与 UPDATE_BEFORE 中的占位符始终为 null。                                                                                                                                                                                                                                                                                                                                                                                                             |
 | debezium                                  | Config   | 否      | -       | 透传 [Debezium 属性](https://github.com/debezium/debezium/blob/v1.9.8.Final/documentation/modules/ROOT/pages/connectors/oracle.adoc#connector-properties) 给 Debezium Embedded Engine，该引擎用于捕获 Oracle 服务器的数据更改。                                                                                                                                                                                                                                                                                                                                                      |
 | common-options                            |          | 否      | -       | 源端插件常用参数，详情请参阅 [源端常用选项](../common-options/source-common-options.md)。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+
+## LOB 列
+
+CLOB、NCLOB 与 BLOB 按以下方式采集。这适用于默认的 SeaTunnel 行格式。`format = COMPATIBLE_DEBEZIUM_JSON` 会保留原始 Debezium 信封，其中仍包含不可用值占位符。
+
+**快照。** 初始快照通过 JDBC 读取 LOB 定位器，并把真实列值写入变更事件。无论 Debezium `lob.enabled` 是否为 `true` 都会如此。嵌入的 Debezium 1.9.8 在 `lob.enabled = false`（默认值，SeaTunnel 不会主动设置）时，会把这些 JDBC 定位器转成 null；对 `NOT NULL` 列则会转成空字符串或零长度字节。
+
+**流式。** Redo 挖掘不会包含语句未修改的 LOB 列的完整镜像。Debezium 会用不可用值占位符填充该列。默认占位符是 `__debezium_unavailable_value`，可通过 `debezium.unavailable.value.placeholder` 覆盖。BLOB 的占位符是该字符串在 JVM 默认字符集下的字节，这与 Debezium 1.9.8 的比较方式一致。
+
+默认行格式不会把该占位符当作列数据下发：
+
+- `DELETE` 与 `UPDATE_BEFORE` 将 LOB 占位符替换为 null。恰好等于占位符的 `VARCHAR2` 等非 LOB 列保持原值。
+- `lob.reselect.enabled` 为 `true`（默认）时，`INSERT` 与 `UPDATE_AFTER` 只按主键重新查询仍为占位符的 LOB 列。事件 source 中存在正整数 `commit_scn` 时，查询为 `SELECT cols FROM (SELECT * FROM schema.table AS OF SCN commit_scn) WHERE pk = ?`。闪回不可用时（`ORA-01555`、`ORA-01466`、`ORA-08181` 或 `ORA-01031`），连接器改为查询当前行并记录警告。若该行在原始提交之后又被修改，当前行可能与当时的值不同。
+- 重新查询无法恢复值时，由 `lob.unavailable-value.handling` 决定：`null`（默认）把剩余占位符替换为 null，`fail` 使任务失败，`warn_and_keep` 按表记录一次警告并保留占位符。
+
+重新查询需要主键，或在 `table-names-config` 中配置的键。请为 CDC 用户授予表上的 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。`AS OF SCN` 还要求该 SCN 对应的 undo 仍然保留。`XMLTYPE` 不按 LOB 处理。Debezium 直接发出的 SQL `NULL` 不会被重新查询。
+
+`debezium.lob.enabled` 仍然控制 LogMiner 是否挖掘 LOB redo。除非需要从 redo 流中取出已变更的 LOB 镜像，否则保持 `false`。未变更的 LOB 列仍会以占位符到达，并由上述选项处理。
+
+若要恢复以前原样透传占位符的行为：
+
+```hocon
+Oracle-CDC {
+  lob.reselect.enabled = false
+  lob.unavailable-value.handling = "warn_and_keep"
+}
+```
 
 ## 任务示例
 
@@ -550,6 +579,10 @@ debezium {
 首先把它当作数据库和 redo log 调优问题处理。优先复用上面的 LogMiner 配置和 supplemental
 logging 章节，只为需要采集的表开启日志；只有在确认目标 Oracle CDC 运行时确实支持相应
 Debezium 透传属性后，再引入额外调优参数。
+
+### CLOB、NCLOB、BLOB 列如何采集？
+
+见 [LOB 列](#lob-列)。即使 `debezium.lob.enabled` 为 false，快照也会返回真实 LOB 值。流式事件中 LOB 列上的 `__debezium_unavailable_value` 会按主键重新查询（`lob.reselect.enabled`，默认 `true`），否则遵循 `lob.unavailable-value.handling`（默认 `null`）。`DELETE` 与 `UPDATE_BEFORE` 中的占位符始终为 null。CDC 用户需要 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`，才能使用 `AS OF SCN`。
 
 ### 支持哪些 Oracle 版本？
 

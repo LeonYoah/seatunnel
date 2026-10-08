@@ -81,7 +81,9 @@ public class OracleIncrementalSourceFactory extends BaseChangeStreamTableSourceF
                         OracleIncrementalSourceOptions.TABLE_NAMES_CONFIG,
                         OracleIncrementalSourceOptions.SCHEMA_CHANGES_ENABLED,
                         OracleIncrementalSourceOptions.SCHEMA_CHANGES_INCLUDE,
-                        OracleIncrementalSourceOptions.SCHEMA_CHANGES_EXCLUDE)
+                        OracleIncrementalSourceOptions.SCHEMA_CHANGES_EXCLUDE,
+                        OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED,
+                        OracleIncrementalSourceOptions.LOB_UNAVAILABLE_VALUE_HANDLING)
                 .optional(
                         OracleIncrementalSourceOptions.STARTUP_MODE,
                         OracleIncrementalSourceOptions.STOP_MODE)

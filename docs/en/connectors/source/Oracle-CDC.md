@@ -256,8 +256,37 @@ exit;
 | schema-changes.enabled                    | Boolean  | No        | false   | Schema evolution is disabled by default. Now we only support `add column`、`drop column`、`rename column` and `modify column`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | schema-changes.include                     | List     | No        | -       | Only the listed schema change event types are sent downstream (when `schema-changes.enabled = true`). Empty means all are eligible. See [Schema change event filtering](#schema-change-event-filtering).                                                                                                                                                                                                                                                                                                                                                                                                             |
 | schema-changes.exclude                     | List     | No        | -       | Schema change event types listed here are NOT sent downstream. Applied after `schema-changes.include`; exclude wins on conflict. See [Schema change event filtering](#schema-change-event-filtering).                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| lob.reselect.enabled                      | Boolean  | No        | true    | Re-select CLOB, NCLOB, and BLOB columns that still contain Debezium's unavailable-value placeholder on INSERT and UPDATE_AFTER. The lookup uses the primary key and, when `commit_scn` is present, `AS OF SCN`. DELETE and UPDATE_BEFORE placeholders are always null. Requires SELECT and `FLASHBACK ANY TABLE`, or `FLASHBACK` on the table. Set false to skip the query and apply `lob.unavailable-value.handling`. See [LOB columns](#lob-columns).                                                                                                                                                                                                                              |
+| lob.unavailable-value.handling            | Enum     | No        | null    | What to do when a LOB placeholder cannot be re-selected. `null` replaces it with null so the sentinel is not written as data. `fail` stops the task. `warn_and_keep` logs a warning and keeps the placeholder. DELETE and UPDATE_BEFORE placeholders are always null.                                                                                                                                                                                                                                                                                                                                                                                                             |
 | debezium                                  | Config   | No        | -       | Pass-through [Debezium's properties](https://github.com/debezium/debezium/blob/v1.9.8.Final/documentation/modules/ROOT/pages/connectors/oracle.adoc#connector-properties) to Debezium Embedded Engine which is used to capture data changes from Oracle server.                                                                                                                                                                                                                                                                                                                                                      |
 | common-options                            |          | no        | -       | Source plugin common parameters, please refer to [Source Common Options](../common-options/source-common-options.md) for details                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+
+## LOB columns
+
+CLOB, NCLOB, and BLOB are captured as follows. This applies to the default SeaTunnel row format. `format = COMPATIBLE_DEBEZIUM_JSON` keeps the raw Debezium envelope, including the unavailable-value placeholder.
+
+**Snapshot.** The initial snapshot reads LOB locators with JDBC and writes the real column values into the change event. This happens whether or not Debezium `lob.enabled` is `true`. With the embedded Debezium 1.9.8 converters, `lob.enabled = false` (the default, and the value SeaTunnel leaves unset) used to turn those JDBC locators into null, or into an empty string / zero-length bytes for `NOT NULL` columns.
+
+**Streaming.** Redo mining does not include the full image of a LOB column the statement did not change. Debezium fills that column with the unavailable-value placeholder. The default placeholder is `__debezium_unavailable_value`. Override it with `debezium.unavailable.value.placeholder`. BLOB placeholders are that string's bytes in the JVM's default charset, which is how Debezium 1.9.8 compares them.
+
+With the default row format, that placeholder is not forwarded as column data:
+
+- `DELETE` and `UPDATE_BEFORE` replace LOB placeholders with null. `VARCHAR2` and other non-LOB columns that happen to equal the placeholder are left unchanged.
+- `INSERT` and `UPDATE_AFTER` re-select only the placeholder LOB columns by primary key when `lob.reselect.enabled` is `true` (the default). When the event source has a positive numeric `commit_scn`, the query is `SELECT cols FROM (SELECT * FROM schema.table AS OF SCN commit_scn) WHERE pk = ?`. If flashback is unavailable (`ORA-01555`, `ORA-01466`, `ORA-08181`, or `ORA-01031`), the connector queries the current row and logs a warning. The current row can differ if the row changed again after the original commit.
+- If re-select cannot recover a value, `lob.unavailable-value.handling` applies: `null` (default) replaces the remaining placeholder with null, `fail` stops the task, and `warn_and_keep` logs once per table and keeps the placeholder.
+
+Re-select needs a primary key, or a key set in `table-names-config`. Grant the CDC user `SELECT` on the table and either `FLASHBACK ANY TABLE` or `FLASHBACK` on that table. `AS OF SCN` also needs undo retained for that SCN. `XMLTYPE` is not treated as a LOB. A SQL `NULL` that Debezium emits as null is not re-selected.
+
+`debezium.lob.enabled` still controls whether LogMiner tries to mine LOB redo. Leave it `false` unless you need changed LOB images from the redo stream. Unchanged LOB columns still arrive as the placeholder and are handled by the options above.
+
+To keep the previous pass-through behavior:
+
+```hocon
+Oracle-CDC {
+  lob.reselect.enabled = false
+  lob.unavailable-value.handling = "warn_and_keep"
+}
+```
 
 ## Task Example
 
@@ -557,6 +586,10 @@ Treat this primarily as a database and redo-log tuning topic. Reuse the LogMiner
 supplemental logging sections above first, enable logging only for the required tables, and add
 Debezium passthrough tuning only after validating that those properties are supported in the exact
 Oracle CDC runtime you are deploying.
+
+### How are CLOB, NCLOB, and BLOB columns captured?
+
+See [LOB columns](#lob-columns). Snapshot reads return the real LOB values even when `debezium.lob.enabled` is false. Streaming events that still contain `__debezium_unavailable_value` on a LOB column are re-selected by primary key (`lob.reselect.enabled`, default `true`) and otherwise follow `lob.unavailable-value.handling` (default `null`). `DELETE` and `UPDATE_BEFORE` placeholders are always null. The CDC user needs `SELECT` plus `FLASHBACK ANY TABLE` or `FLASHBACK` on the table for `AS OF SCN`.
 
 ### Which Oracle versions are supported?
 

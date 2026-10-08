@@ -130,6 +130,63 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
     }
 
     @TestTemplate
+    public void testOracleCdcLobSnapshotAndUnchangedLobUpdate(TestContainer container)
+            throws Exception {
+        String sourceTable = "LOB_TYPES";
+        String sinkTable = "SINK_LOB_TYPES";
+        clearTable(SCEHMA_NAME, sourceTable);
+        clearTable(SCEHMA_NAME, sinkTable);
+
+        executeSql(
+                "INSERT INTO "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " VALUES (1, 'keep-me', 'clob-snapshot', N'nclob-snapshot', HEXTORAW('010203'))");
+
+        CompletableFuture.supplyAsync(
+                () -> {
+                    try {
+                        container.executeJob("/oraclecdc_to_oracle_lob.conf");
+                    } catch (Exception e) {
+                        log.error("Commit task exception :" + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+                    return null;
+                });
+
+        String lobCompareSql = lobCompareSql(SCEHMA_NAME);
+        await().atMost(600000, TimeUnit.MILLISECONDS)
+                .untilAsserted(
+                        () -> {
+                            Assertions.assertIterableEquals(
+                                    querySql(String.format(lobCompareSql, sourceTable)),
+                                    querySql(String.format(lobCompareSql, sinkTable)));
+                        });
+
+        executeSql(
+                "UPDATE "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " SET VAL_VARCHAR = 'updated' WHERE ID = 1");
+        executeSql(
+                "INSERT INTO "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " VALUES (2, 'second', 'clob-stream', N'nclob-stream', HEXTORAW('0A0B'))");
+
+        await().atMost(600000, TimeUnit.MILLISECONDS)
+                .untilAsserted(
+                        () -> {
+                            Assertions.assertIterableEquals(
+                                    querySql(String.format(lobCompareSql, sourceTable)),
+                                    querySql(String.format(lobCompareSql, sinkTable)));
+                        });
+    }
+
+    @TestTemplate
     @DisabledOnContainer(
             value = {},
             type = {EngineType.SPARK, EngineType.FLINK},
@@ -631,6 +688,15 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
 
     private String getSourceQuerySQL(String database, String tableName) {
         return String.format(SOURCE_SQL_TEMPLATE, database, tableName);
+    }
+
+    private static String lobCompareSql(String schema) {
+        return "SELECT ID, VAL_VARCHAR, DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 1),"
+                + " DBMS_LOB.SUBSTR(VAL_NCLOB, 4000, 1),"
+                + " RAWTOHEX(DBMS_LOB.SUBSTR(VAL_BLOB, 2000, 1))"
+                + " FROM "
+                + schema
+                + ".%s ORDER BY ID";
     }
 
     @TestTemplate
