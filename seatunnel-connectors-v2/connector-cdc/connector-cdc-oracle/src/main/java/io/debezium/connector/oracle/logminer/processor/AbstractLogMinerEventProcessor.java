@@ -56,9 +56,7 @@ import io.debezium.relational.TableId;
 import io.debezium.text.ParsingException;
 import io.debezium.util.Clock;
 import io.debezium.util.Strings;
-import oracle.sql.RAW;
 
-import java.nio.charset.StandardCharsets;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -83,8 +81,6 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
     private static final Logger LOGGER =
             LoggerFactory.getLogger(AbstractLogMinerEventProcessor.class);
     private static final String NO_SEQUENCE_TRX_ID_SUFFIX = "ffffffff";
-    private static final String XML_WRITE_PREAMBLE = "XML_REDO := ";
-    private static final String XML_WRITE_PREAMBLE_NULL = XML_WRITE_PREAMBLE + "NULL";
 
     private final ChangeEventSourceContext context;
     private final OracleConnectorConfig connectorConfig;
@@ -850,63 +846,15 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
     }
 
     private XmlWriteEvent getXmlWriteEventFromRow(LogMinerEventRow row) {
-        final String sql = row.getRedoSql();
-        if (!sql.startsWith(XML_WRITE_PREAMBLE)) {
-            throw new ParsingException(
-                    null, "XML write operation does not start with XML_REDO preamble");
-        }
-
         try {
-            final String xml;
-            if (XML_WRITE_PREAMBLE_NULL.equals(sql)) {
-                // The XML column is being set to NULL. DBZ-7489.
-                return new XmlWriteEvent(row, null, 0);
-            } else if (sql.charAt(XML_WRITE_PREAMBLE.length()) == '\'') {
-                // The XML is not provided as HEXTORAW, which means it was likely stored inline as a
-                // VARCHAR column data type because the text is relatively short, i.e. short CLOB.
-                int lastQuoteIndex = sql.lastIndexOf('\'');
-                if (lastQuoteIndex == -1) {
-                    throw new IllegalStateException("Failed to find end of XML document");
-                }
-                // indices here remove leading and trailing single quotes
-                xml = sql.substring(XML_WRITE_PREAMBLE.length() + 1, lastQuoteIndex);
-            } else {
-                // The XML is provided as HEXTORAW, which means that it was stored out of bands in
-                // LOB storage and not inline in the data page. The contents of the XML will
-                // require being decoded.
-                int lastParenIndex = sql.lastIndexOf(')');
-                if (lastParenIndex == -1) {
-                    throw new IllegalStateException("Failed to find end of XML document");
-                }
-
-                // indices are meant to preserve the prefix function call and suffix parenthesis
-                String xmlHex = sql.substring(XML_WRITE_PREAMBLE.length(), lastParenIndex + 1);
-
-                // NOTE: Oracle generates a small bug here where the initial row starts the function
-                // argument with a single quote but the last entry to fulfill the data does not
-                // end-quote the argument, but rather simply stops with a parenthesis.
-                if (!xmlHex.startsWith("HEXTORAW('") || !xmlHex.endsWith(")")) {
-                    throw new IllegalStateException("Invalid HEXTORAW XML decoded data");
-                } else {
-                    if (xmlHex.endsWith("')")) {
-                        // Handles situation when Oracle fixes bug
-                        xmlHex = xmlHex.substring(10, xmlHex.length() - 2);
-                    } else {
-                        // Compensates for the bug
-                        xmlHex = xmlHex.substring(10, xmlHex.length() - 1);
-                    }
-                }
-
-                xml = new String(RAW.hexString2Bytes(xmlHex), StandardCharsets.UTF_8);
+            XmlWriteParser.Payload payload = XmlWriteParser.parse(row.getRedoSql());
+            if (payload.isNullValue()) {
+                return new XmlWriteEvent(row, (String) null, 0);
             }
-
-            int lastColonIndex = sql.lastIndexOf(':');
-            if (lastColonIndex == -1) {
-                throw new IllegalStateException("Failed to find XML document length");
+            if (payload.getBytes() != null) {
+                return new XmlWriteEvent(row, payload.getBytes(), payload.getLength());
             }
-
-            final Integer length = Integer.parseInt(sql.substring(lastColonIndex + 1).trim());
-            return new XmlWriteEvent(row, xml, length);
+            return new XmlWriteEvent(row, payload.getText(), payload.getLength());
         } catch (Exception e) {
             throw new ParsingException(null, "Failed to parse XML write data", e);
         }

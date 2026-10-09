@@ -299,6 +299,8 @@ Oracle-CDC {
 
 `XMLTYPE` columns are captured when `debezium.lob.enabled` is true. LogMiner emits `XML_BEGIN` (68), `XML_WRITE` (70), and `XML_END` (71). The connector assembles those events into one string and merges that string into the surrounding INSERT or UPDATE, the same way it assembles `LOB_WRITE`. When `debezium.lob.enabled` is not true, those operation codes are not mined and the handlers return immediately.
 
+Out-of-line `XML_WRITE` chunks are `HEXTORAW` byte sequences. The connector keeps those bytes and decodes them as one UTF-8 string when the document is assembled. Decoding each chunk on its own turns a multi-byte character that crosses a chunk boundary into U+FFFD. Inline `XML_WRITE` values are quoted SQL text and are concatenated as characters, including a surrogate pair split across two quoted chunks.
+
 The SeaTunnel value is STRING. Debezium maps JDBC `SQLXML` to `io.debezium.data.Xml`. `XMLTYPE` and `SYS.XMLTYPE` are already mapped to STRING. Put `xdb` and `xmlparserv2` on the connector classpath, same Oracle version as `ojdbc8` (19.18 in this build), so the driver reports the column as `SQLXML`. Both jars are `provided` dependencies of `connector-cdc-oracle`. Copy them next to `ojdbc8`. See [Install Jdbc Driver](#install-jdbc-driver).
 
 `xmlparserv2` registers an Oracle SAX parser. If XML parsing in the process fails after those jars are added, start the engine with:

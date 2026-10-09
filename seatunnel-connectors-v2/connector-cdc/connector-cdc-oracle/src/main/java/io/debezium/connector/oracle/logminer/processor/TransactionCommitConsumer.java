@@ -39,6 +39,8 @@ import io.debezium.function.BlockingConsumer;
 import io.debezium.relational.Table;
 import oracle.sql.RAW;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -261,7 +263,7 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
         final XmlUnderConstruction xml = (XmlUnderConstruction) getConstructable(currentXmlDetails);
         try {
             final XmlWriteEvent writeEvent = (XmlWriteEvent) event;
-            if (writeEvent.getXml() != null) {
+            if (writeEvent.getXml() != null || writeEvent.getXmlBytes() != null) {
                 xml.add(new XmlFragment(writeEvent));
             }
         } catch (DebeziumException exception) {
@@ -799,15 +801,19 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
     }
 
     static class XmlFragment extends Fragment {
+        final byte[] bytes;
+
         XmlFragment(final XmlWriteEvent event) {
             if (EventType.XML_WRITE != event.getEventType()) {
                 throw new IllegalArgumentException(
                         "can only construct XmlFragments from XML_WRITE events");
             }
+            this.bytes = event.getXmlBytes();
             this.data = event.getXml();
         }
 
         XmlFragment(String data) {
+            this.bytes = null;
             this.data = data;
         }
     }
@@ -831,14 +837,39 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
             return new XmlUnderConstruction();
         }
 
+        /**
+         * Assembles the document. Consecutive {@code HEXTORAW} chunks are concatenated as bytes and
+         * decoded as one UTF-8 string, so a character split across chunk boundaries stays intact.
+         * Quoted inline chunks are already characters and are appended as text.
+         */
         @Override
         Object merge() {
             if (isNull) {
                 return null;
             }
-            final StringBuilder builder = new StringBuilder();
-            fragments.forEach(fragment -> builder.append(fragment.data));
-            return builder.toString();
+            StringBuilder text = new StringBuilder();
+            ByteArrayOutputStream pendingBytes = null;
+            for (XmlFragment fragment : fragments) {
+                if (fragment.bytes != null) {
+                    if (pendingBytes == null) {
+                        pendingBytes = new ByteArrayOutputStream();
+                    }
+                    pendingBytes.write(fragment.bytes, 0, fragment.bytes.length);
+                } else if (fragment.data != null) {
+                    appendBytes(text, pendingBytes);
+                    pendingBytes = null;
+                    text.append(fragment.data);
+                }
+            }
+            appendBytes(text, pendingBytes);
+            return text.toString();
+        }
+
+        private static void appendBytes(StringBuilder text, ByteArrayOutputStream pendingBytes) {
+            if (pendingBytes == null || pendingBytes.size() == 0) {
+                return;
+            }
+            text.append(new String(pendingBytes.toByteArray(), StandardCharsets.UTF_8));
         }
     }
 

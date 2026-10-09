@@ -298,6 +298,8 @@ Oracle-CDC {
 
 `debezium.lob.enabled` 为 true 时采集 `XMLTYPE` 列。LogMiner 产生 `XML_BEGIN`（68）、`XML_WRITE`（70）和 `XML_END`（71）。连接器把这些事件拼成一个字符串，并合并进同一条 INSERT 或 UPDATE，方式与 `LOB_WRITE` 相同。`debezium.lob.enabled` 不为 true 时，挖掘语句不包含这些操作码，处理函数直接返回。
 
+行外 `XML_WRITE` 分片是 `HEXTORAW` 字节序列。连接器保留这些字节，在拼装整篇文档时一次性按 UTF-8 解码。若对每个分片单独解码，跨分片的多字节字符会变成 U+FFFD。行内 `XML_WRITE` 是带引号的 SQL 文本，按字符拼接，跨两个引号分片的代理对也会保留。
+
 SeaTunnel 中的值类型是 STRING。Debezium 把 JDBC `SQLXML` 映射为 `io.debezium.data.Xml`。`XMLTYPE` 与 `SYS.XMLTYPE` 本来就映射为 STRING。请把与 `ojdbc8` 相同版本的 `xdb` 和 `xmlparserv2`（本构建为 19.18）放到连接器类路径上，驱动才会把该列报告为 `SQLXML`。二者都是 `connector-cdc-oracle` 的 `provided` 依赖，请与 `ojdbc8` 放在一起。见 [安装 Jdbc 驱动](#安装-jdbc-驱动)。
 
 `xmlparserv2` 会注册 Oracle 的 SAX 解析器。加入这些 jar 后如果进程里的 XML 解析失败，启动引擎时加上：

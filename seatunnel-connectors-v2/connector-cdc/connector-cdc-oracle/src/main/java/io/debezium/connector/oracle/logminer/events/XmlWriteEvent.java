@@ -30,11 +30,21 @@ import java.time.Instant;
 public class XmlWriteEvent extends LogMinerEvent {
 
     private final String xml;
+    private final byte[] xmlBytes;
     private final int length;
 
     public XmlWriteEvent(LogMinerEventRow row, String xml, Integer length) {
+        this(row, xml, null, length);
+    }
+
+    public XmlWriteEvent(LogMinerEventRow row, byte[] xmlBytes, Integer length) {
+        this(row, null, xmlBytes, length);
+    }
+
+    private XmlWriteEvent(LogMinerEventRow row, String xml, byte[] xmlBytes, Integer length) {
         super(row);
         this.xml = xml;
+        this.xmlBytes = xmlBytes;
         this.length = length;
     }
 
@@ -47,13 +57,44 @@ public class XmlWriteEvent extends LogMinerEvent {
             Instant changeTime,
             String xml,
             Integer length) {
+        this(eventType, scn, tableId, rowId, rsId, changeTime, xml, null, length);
+    }
+
+    public XmlWriteEvent(
+            EventType eventType,
+            Scn scn,
+            TableId tableId,
+            String rowId,
+            String rsId,
+            Instant changeTime,
+            byte[] xmlBytes,
+            Integer length) {
+        this(eventType, scn, tableId, rowId, rsId, changeTime, null, xmlBytes, length);
+    }
+
+    private XmlWriteEvent(
+            EventType eventType,
+            Scn scn,
+            TableId tableId,
+            String rowId,
+            String rsId,
+            Instant changeTime,
+            String xml,
+            byte[] xmlBytes,
+            Integer length) {
         super(eventType, scn, tableId, rowId, rsId, changeTime);
         this.xml = xml;
+        this.xmlBytes = xmlBytes;
         this.length = length;
     }
 
     public String getXml() {
         return xml;
+    }
+
+    /** Raw UTF-8 bytes of one out-of-line {@code HEXTORAW} chunk. Null for inline text. */
+    public byte[] getXmlBytes() {
+        return xmlBytes;
     }
 
     public Integer getLength() {
