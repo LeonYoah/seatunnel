@@ -217,7 +217,8 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
                         + "."
                         + sourceTable
                         + " (ID, VAL_VARCHAR, VAL_CLOB, VAL_NCLOB, VAL_BLOB) VALUES (5, 'boundary',"
-                        + " EMPTY_CLOB(), EMPTY_CLOB(), HEXTORAW('0F10')) RETURNING VAL_CLOB INTO"
+                        + " EMPTY_CLOB(), N'nclob-boundary', HEXTORAW('0F10')) RETURNING VAL_CLOB"
+                        + " INTO"
                         + " l_clob; DBMS_LOB.WRITEAPPEND(l_clob, 8191, RPAD('a', 8191, 'a'));"
                         + " DBMS_LOB.APPEND(l_clob, TO_CLOB(emoji)); DBMS_LOB.WRITEAPPEND(l_clob,"
                         + " 8190, RPAD('a', 8190, 'a')); DBMS_LOB.APPEND(l_clob, TO_CLOB(emoji));"
