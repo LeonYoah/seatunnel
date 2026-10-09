@@ -24,10 +24,15 @@ import org.apache.seatunnel.api.table.type.ArrayType;
 import org.apache.seatunnel.api.table.type.BasicType;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
+import org.apache.seatunnel.connectors.seatunnel.jdbc.internal.StatementBoundLobs;
 import org.apache.seatunnel.connectors.seatunnel.jdbc.internal.converter.AbstractJdbcRowConverter;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.Reader;
+import java.sql.Clob;
+import java.sql.Connection;
+import java.sql.NClob;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
@@ -37,10 +42,15 @@ import static org.apache.seatunnel.connectors.seatunnel.jdbc.internal.dialect.or
 import static org.apache.seatunnel.connectors.seatunnel.jdbc.internal.dialect.oracle.OracleTypeConverter.ORACLE_CLOB;
 import static org.apache.seatunnel.connectors.seatunnel.jdbc.internal.dialect.oracle.OracleTypeConverter.ORACLE_NCLOB;
 import static org.apache.seatunnel.connectors.seatunnel.jdbc.internal.dialect.oracle.OracleTypeConverter.ORACLE_VARCHAR2;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 public class OracleJdbcRowConverterTest {
 
@@ -84,6 +94,76 @@ public class OracleJdbcRowConverterTest {
         verify(statement).setObject(1, null);
         verify(statement, never()).setNull(1, Types.CLOB);
         verifyNoMoreInteractions(statement);
+    }
+
+    @Test
+    public void testShortClobKeepsCharacterStream() throws SQLException {
+        PreparedStatement statement = mock(PreparedStatement.class);
+
+        writeLob(ORACLE_CLOB, "abc", statement);
+
+        verify(statement).setCharacterStream(eq(1), any(Reader.class), eq(3));
+        verify(statement, never()).getConnection();
+        verify(statement, never()).setClob(anyInt(), any(Clob.class));
+    }
+
+    @Test
+    public void testLongClobUsesCreateClobAndFreesAfterBatch() throws SQLException {
+        String value = boundaryValue();
+        Connection connection = mock(Connection.class);
+        Clob clob = mock(Clob.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(statement.getConnection()).thenReturn(connection);
+        when(connection.createClob()).thenReturn(clob);
+
+        writeLob(ORACLE_CLOB, value, statement);
+
+        verify(clob).setString(1, value);
+        verify(statement).setClob(1, clob);
+        verify(statement, never()).setCharacterStream(anyInt(), any(Reader.class), anyInt());
+        verify(statement, never()).setCharacterStream(anyInt(), any(Reader.class), anyLong());
+
+        StatementBoundLobs.free(statement);
+        verify(clob).free();
+    }
+
+    @Test
+    public void testLongNclobUsesCreateNClob() throws SQLException {
+        String value = boundaryValue();
+        Connection connection = mock(Connection.class);
+        NClob nclob = mock(NClob.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(statement.getConnection()).thenReturn(connection);
+        when(connection.createNClob()).thenReturn(nclob);
+
+        writeLob(ORACLE_NCLOB, value, statement);
+
+        verify(nclob).setString(1, value);
+        verify(statement).setNClob(1, nclob);
+        verify(statement, never()).setNCharacterStream(anyInt(), any(Reader.class), anyLong());
+
+        StatementBoundLobs.free(statement);
+        verify(nclob).free();
+    }
+
+    private void writeLob(String sourceType, String value, PreparedStatement statement)
+            throws SQLException {
+        TableSchema tableSchema = createTableSchema(BasicType.STRING_TYPE, null);
+        TableSchema databaseTableSchema = createTableSchema(BasicType.STRING_TYPE, sourceType);
+        oracleJdbcRowConverter.toExternal(
+                tableSchema,
+                databaseTableSchema,
+                new SeaTunnelRow(new Object[] {value}),
+                statement);
+    }
+
+    private static String boundaryValue() {
+        StringBuilder builder = new StringBuilder(OracleJdbcRowConverter.LOB_UTF16_BLOCK + 2);
+        for (int i = 0; i < OracleJdbcRowConverter.LOB_UTF16_BLOCK - 1; i++) {
+            builder.append('a');
+        }
+        builder.append("\uD83D\uDE00");
+        return builder.toString();
     }
 
     private void assertOracleNullBinding(

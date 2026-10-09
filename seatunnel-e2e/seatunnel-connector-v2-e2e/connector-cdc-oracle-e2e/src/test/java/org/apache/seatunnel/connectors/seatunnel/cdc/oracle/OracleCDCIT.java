@@ -206,6 +206,22 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
                         + " EMPTY_CLOB(), EMPTY_CLOB(), HEXTORAW('0E0F')) RETURNING VAL_CLOB,"
                         + " VAL_NCLOB INTO l_clob, l_nclob; DBMS_LOB.WRITEAPPEND(l_clob, 100,"
                         + " c_chunk); DBMS_LOB.WRITEAPPEND(l_nclob, 100, n_chunk); END;");
+        // 8191 ASCII chars, one emoji, 8190 ASCII, one emoji, 8190 ASCII, one emoji.
+        // In Java that places a surrogate pair on UTF-16 indexes 8191, 16383, and 24575.
+        // Oracle character offsets of those emoji are 8192, 16383, and 24574.
+        executeSql(
+                "DECLARE l_clob CLOB; emoji VARCHAR2(10) := UNISTR('\\D83D\\DE00'); BEGIN INSERT"
+                        + " INTO "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " (ID, VAL_VARCHAR, VAL_CLOB, VAL_NCLOB, VAL_BLOB) VALUES (5, 'boundary',"
+                        + " EMPTY_CLOB(), EMPTY_CLOB(), HEXTORAW('0F10')) RETURNING VAL_CLOB INTO"
+                        + " l_clob; DBMS_LOB.WRITEAPPEND(l_clob, 8191, RPAD('a', 8191, 'a'));"
+                        + " DBMS_LOB.WRITEAPPEND(l_clob, 1, emoji); DBMS_LOB.WRITEAPPEND(l_clob,"
+                        + " 8190, RPAD('a', 8190, 'a')); DBMS_LOB.WRITEAPPEND(l_clob, 1, emoji);"
+                        + " DBMS_LOB.WRITEAPPEND(l_clob, 8190, RPAD('a', 8190, 'a'));"
+                        + " DBMS_LOB.WRITEAPPEND(l_clob, 1, emoji); END;");
 
         await().atMost(600000, TimeUnit.MILLISECONDS)
                 .untilAsserted(
@@ -724,6 +740,9 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
         return "SELECT ID, VAL_VARCHAR, DBMS_LOB.GETLENGTH(VAL_CLOB),"
                 + " DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 1),"
                 + " DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 4001),"
+                + " DBMS_LOB.SUBSTR(VAL_CLOB, 1, 8192),"
+                + " DBMS_LOB.SUBSTR(VAL_CLOB, 1, 16383),"
+                + " DBMS_LOB.SUBSTR(VAL_CLOB, 1, 24574),"
                 + " DBMS_LOB.GETLENGTH(VAL_NCLOB),"
                 + " DBMS_LOB.SUBSTR(VAL_NCLOB, 100, 1),"
                 + " RAWTOHEX(DBMS_LOB.SUBSTR(VAL_BLOB, 2000, 1))"
