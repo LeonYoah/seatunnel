@@ -209,6 +209,7 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
         // 8191 ASCII chars, one emoji, 8190 ASCII, one emoji, 8190 ASCII, one emoji.
         // In Java that places a surrogate pair on UTF-16 indexes 8191, 16383, and 24575.
         // Oracle character offsets of those emoji are 8192, 16383, and 24574.
+        // DBMS_LOB.WRITEAPPEND counts the buffer in UTF-16 units, so one emoji has amount 2.
         executeSql(
                 "DECLARE l_clob CLOB; emoji VARCHAR2(10) := UNISTR('\\D83D\\DE00'); BEGIN INSERT"
                         + " INTO "
@@ -218,10 +219,10 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
                         + " (ID, VAL_VARCHAR, VAL_CLOB, VAL_NCLOB, VAL_BLOB) VALUES (5, 'boundary',"
                         + " EMPTY_CLOB(), EMPTY_CLOB(), HEXTORAW('0F10')) RETURNING VAL_CLOB INTO"
                         + " l_clob; DBMS_LOB.WRITEAPPEND(l_clob, 8191, RPAD('a', 8191, 'a'));"
-                        + " DBMS_LOB.WRITEAPPEND(l_clob, 1, emoji); DBMS_LOB.WRITEAPPEND(l_clob,"
-                        + " 8190, RPAD('a', 8190, 'a')); DBMS_LOB.WRITEAPPEND(l_clob, 1, emoji);"
+                        + " DBMS_LOB.WRITEAPPEND(l_clob, 2, emoji); DBMS_LOB.WRITEAPPEND(l_clob,"
+                        + " 8190, RPAD('a', 8190, 'a')); DBMS_LOB.WRITEAPPEND(l_clob, 2, emoji);"
                         + " DBMS_LOB.WRITEAPPEND(l_clob, 8190, RPAD('a', 8190, 'a'));"
-                        + " DBMS_LOB.WRITEAPPEND(l_clob, 1, emoji); END;");
+                        + " DBMS_LOB.WRITEAPPEND(l_clob, 2, emoji); END;");
 
         await().atMost(600000, TimeUnit.MILLISECONDS)
                 .untilAsserted(
