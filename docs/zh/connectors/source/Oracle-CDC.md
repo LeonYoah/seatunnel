@@ -270,7 +270,7 @@ CLOB、NCLOB 与 BLOB 按以下方式采集。这适用于默认的 SeaTunnel �
 
 **流式，且 `debezium.lob.enabled` 不为 true。** LogMiner 不会挖掘 `LOB_WRITE` redo。行外 LOB 插入会先记录 `EMPTY_CLOB()` / `EMPTY_BLOB()`，再记录 `LOB_WRITE`。Debezium 1.9.8 把这个空标记转成 null，只修改 LOB 的更新可能根本不产生行变更。SeaTunnel 不会额外查询，也不会改写这些行，因此已有作业的流式行为保持不变。将 `lob.reselect.enabled` 设为 true，或将 `lob.unavailable-value.handling` 设为 `null` / `fail`，会在创建 source 时被拒绝，提示必须先设置 `debezium.lob.enabled = "true"`。显式的 `false` 与 `warn_and_keep` 可以接受，且不改变行为。
 
-**流式，且 `debezium.lob.enabled` 为 true。** LogMiner 会挖掘 LOB redo，包括 `LOB_WRITE`。语句未修改的 LOB 列仍会填入不可用值占位符。默认占位符是 `__debezium_unavailable_value`，可通过 `debezium.unavailable.value.placeholder` 覆盖。BLOB 的占位符是该字符串在 JVM 默认字符集下的字节，这与 Debezium 1.9.8 的比较方式一致。
+**流式，且 `debezium.lob.enabled` 为 true。** LogMiner 会挖掘 LOB redo，包括 `LOB_WRITE`。语句未修改的 LOB 列仍会填入不可用值占位符。默认占位符是 `__debezium_unavailable_value`，可通过 `debezium.unavailable.value.placeholder` 覆盖。BLOB 的占位符是该字符串在 JVM 默认字符集下的字节，这与 Debezium 1.9.8 的比较方式一致。没有后续 `LOB_WRITE` 的显式 `EMPTY_CLOB()` 或 `EMPTY_BLOB()` 会变成空字符串或零长度字节，与 JDBC 快照读到的空定位器一致。SQL `NULL` 仍是 null。
 
 默认值 `lob.reselect.enabled = false` 与 `lob.unavailable-value.handling = warn_and_keep` 即使开启了 LOB 挖掘，也不会查询 Oracle，也不会改写行。只有 `lob.reselect.enabled` 为 true，或 handling 为 `null` / `fail` 时，安全网才会生效：
 

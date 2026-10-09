@@ -41,8 +41,11 @@ import java.sql.SQLException;
  */
 public class OracleJdbcLobValueConverters extends OracleValueConverters {
 
+    private final boolean lobEnabled;
+
     public OracleJdbcLobValueConverters(OracleConnectorConfig config, OracleConnection connection) {
         super(config, connection);
+        this.lobEnabled = config.isLobEnabled();
     }
 
     /**
@@ -54,6 +57,11 @@ public class OracleJdbcLobValueConverters extends OracleValueConverters {
         if (data instanceof Clob) {
             return readClob(column, (Clob) data);
         }
+        // Streaming redo uses the function text. With LOB mining on, that is a real empty LOB,
+        // the same value a JDBC snapshot reads from an empty locator. SQL NULL is not this text.
+        if (lobEnabled && OracleValueConverters.EMPTY_CLOB_FUNCTION.equals(data)) {
+            return "";
+        }
         return super.convertString(column, fieldDefn, data);
     }
 
@@ -64,7 +72,9 @@ public class OracleJdbcLobValueConverters extends OracleValueConverters {
     @Override
     protected Object convertBinary(
             Column column, Field fieldDefn, Object data, BinaryHandlingMode mode) {
-        if (data instanceof Blob) {
+        if (lobEnabled && OracleValueConverters.EMPTY_BLOB_FUNCTION.equals(data)) {
+            data = new byte[0];
+        } else if (data instanceof Blob) {
             data = readBlob(column, (Blob) data);
         }
         return super.convertBinary(column, fieldDefn, data, mode);

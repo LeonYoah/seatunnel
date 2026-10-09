@@ -63,13 +63,38 @@ public class OracleJdbcLobValueConvertersTest {
 
     @Test
     public void snapshotBlobIsMaterializedWhenLobIsDisabled() throws Exception {
-        ValueConverter converter = converter(blobColumn(), Schema.OPTIONAL_BYTES_SCHEMA);
+        ValueConverter converter = converter(blobColumn(false), Schema.OPTIONAL_BYTES_SCHEMA);
         Blob blob = mock(Blob.class);
         byte[] payload = new byte[] {1, 2, 3};
         when(blob.length()).thenReturn((long) payload.length);
         when(blob.getBytes(1L, payload.length)).thenReturn(payload);
 
         Assertions.assertArrayEquals(payload, bytes(converter.convert(blob)));
+    }
+
+    @Test
+    public void streamingEmptyClobIsEmptyWhenLobMiningIsOn() {
+        ValueConverter converter = converter(clobColumn(true), Schema.OPTIONAL_STRING_SCHEMA, true);
+
+        Assertions.assertEquals("", converter.convert(OracleValueConverters.EMPTY_CLOB_FUNCTION));
+        Assertions.assertNull(converter.convert(null));
+    }
+
+    @Test
+    public void streamingEmptyClobStaysNullWhenLobMiningIsOff() {
+        ValueConverter converter =
+                converter(clobColumn(true), Schema.OPTIONAL_STRING_SCHEMA, false);
+
+        Assertions.assertNull(converter.convert(OracleValueConverters.EMPTY_CLOB_FUNCTION));
+    }
+
+    @Test
+    public void streamingEmptyBlobIsEmptyWhenLobMiningIsOn() {
+        ValueConverter converter = converter(blobColumn(true), Schema.OPTIONAL_BYTES_SCHEMA, true);
+
+        Assertions.assertArrayEquals(
+                new byte[0], bytes(converter.convert(OracleValueConverters.EMPTY_BLOB_FUNCTION)));
+        Assertions.assertNull(converter.convert(null));
     }
 
     @Test
@@ -96,6 +121,10 @@ public class OracleJdbcLobValueConvertersTest {
     }
 
     private static ValueConverter converter(Column column, Schema fieldSchema) {
+        return converter(column, fieldSchema, false);
+    }
+
+    private static ValueConverter converter(Column column, Schema fieldSchema, boolean lobEnabled) {
         OracleConnectorConfig config =
                 new OracleConnectorConfig(
                         Configuration.create()
@@ -103,7 +132,7 @@ public class OracleJdbcLobValueConvertersTest {
                                 .with(OracleConnectorConfig.HOSTNAME, "localhost")
                                 .with(OracleConnectorConfig.USER, "test")
                                 .with(OracleConnectorConfig.PASSWORD, "test")
-                                .with(OracleConnectorConfig.LOB_ENABLED, false)
+                                .with(OracleConnectorConfig.LOB_ENABLED, lobEnabled)
                                 .with(
                                         "unavailable.value.placeholder",
                                         "__debezium_unavailable_value")
@@ -125,12 +154,12 @@ public class OracleJdbcLobValueConvertersTest {
                 .create();
     }
 
-    private static Column blobColumn() {
+    private static Column blobColumn(boolean optional) {
         return Column.editor()
                 .name("VAL_BLOB")
                 .type("BLOB")
                 .jdbcType(Types.BLOB)
-                .optional(false)
+                .optional(optional)
                 .position(1)
                 .create();
     }
