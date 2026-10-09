@@ -35,9 +35,9 @@ import java.util.Map;
 /**
  * Re-selects Oracle LOB columns over JDBC.
  *
- * <p>A positive {@code commit_scn} is read with {@code AS OF SCN}. ORA-01555, ORA-01466, ORA-08181,
- * and ORA-01031 fall back to the current row. The connection is opened on the reader and is not
- * serialized.
+ * <p>A positive {@code commit_scn} is bound to {@code AS OF SCN ?}. ORA-01555, ORA-01466,
+ * ORA-08181, and ORA-01031 fall back to the current row. Prepared statements are cached per SQL
+ * text so Oracle reuses the cursor. The connection is opened on the reader and is not serialized.
  */
 public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector {
 
@@ -52,6 +52,7 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
 
     private transient Connection connection;
     private transient boolean pdbSelected;
+    private transient Map<String, PreparedStatement> statementCache;
 
     public JdbcOracleLobColumnReselector(
             String url, String username, String password, String pdbName) {
@@ -76,6 +77,7 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
             throws SQLException {
         return query(
                 openConnection(),
+                statementCache(),
                 schema,
                 table,
                 lobColumns,
@@ -86,6 +88,7 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
 
     @Override
     public synchronized void close() {
+        closeCachedStatements();
         if (connection == null) {
             return;
         }
@@ -112,15 +115,42 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
             List<Object> primaryKeyValues,
             String commitScn)
             throws SQLException {
+        return query(
+                connection,
+                null,
+                schema,
+                table,
+                lobColumns,
+                primaryKeyColumns,
+                primaryKeyValues,
+                commitScn);
+    }
+
+    /**
+     * Executes the re-select, optionally reusing prepared statements from {@code cache}. A null
+     * cache prepares a new statement for each call and closes it.
+     */
+    static OracleLobColumnReselector.ReselectResult query(
+            Connection connection,
+            Map<String, PreparedStatement> cache,
+            String schema,
+            String table,
+            List<String> lobColumns,
+            List<String> primaryKeyColumns,
+            List<Object> primaryKeyValues,
+            String commitScn)
+            throws SQLException {
         String scn = OracleLobReselectSql.usableCommitScn(commitScn);
         if (scn != null) {
             try {
                 return execute(
                         connection,
+                        cache,
                         OracleLobReselectSql.buildQuery(
                                 schema, table, lobColumns, primaryKeyColumns, scn),
                         lobColumns,
-                        primaryKeyValues);
+                        primaryKeyValues,
+                        Long.valueOf(scn));
             } catch (SQLException e) {
                 if (!OracleLobReselectSql.isFlashbackUnavailable(e)) {
                     throw e;
@@ -138,15 +168,18 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
         }
         return execute(
                 connection,
+                cache,
                 OracleLobReselectSql.buildQuery(schema, table, lobColumns, primaryKeyColumns, null),
                 lobColumns,
-                primaryKeyValues);
+                primaryKeyValues,
+                null);
     }
 
     private Connection openConnection() throws SQLException {
         if (connection != null && !connection.isClosed()) {
             return connection;
         }
+        closeCachedStatements();
         if (url == null || url.trim().isEmpty()) {
             throw new SQLException(
                     "Oracle LOB re-select requires the Oracle-CDC url option to open a JDBC connection");
@@ -179,15 +212,44 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
         pdbSelected = true;
     }
 
+    private Map<String, PreparedStatement> statementCache() {
+        if (statementCache == null) {
+            statementCache = new HashMap<String, PreparedStatement>();
+        }
+        return statementCache;
+    }
+
+    private void closeCachedStatements() {
+        if (statementCache == null) {
+            return;
+        }
+        for (PreparedStatement statement : statementCache.values()) {
+            try {
+                statement.close();
+            } catch (SQLException e) {
+                LOG.warn("Failed to close a cached Oracle LOB re-select statement", e);
+            }
+        }
+        statementCache = null;
+    }
+
     private static OracleLobColumnReselector.ReselectResult execute(
             Connection connection,
+            Map<String, PreparedStatement> cache,
             String sql,
             List<String> lobColumns,
-            List<Object> primaryKeyValues)
+            List<Object> primaryKeyValues,
+            Long commitScn)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+        PreparedStatement statement = cachedStatement(connection, cache, sql);
+        boolean keepOpen = cache != null;
+        try {
+            int index = 1;
+            if (commitScn != null) {
+                statement.setLong(index++, commitScn.longValue());
+            }
             for (int i = 0; i < primaryKeyValues.size(); i++) {
-                statement.setObject(i + 1, primaryKeyValues.get(i));
+                statement.setObject(index++, primaryKeyValues.get(i));
             }
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
@@ -199,6 +261,49 @@ public class JdbcOracleLobColumnReselector implements OracleLobColumnReselector 
                 }
                 return OracleLobColumnReselector.ReselectResult.found(values);
             }
+        } catch (SQLException e) {
+            if (keepOpen) {
+                discard(cache, sql, statement);
+            }
+            throw e;
+        } finally {
+            if (!keepOpen) {
+                statement.close();
+            }
+        }
+    }
+
+    private static PreparedStatement cachedStatement(
+            Connection connection, Map<String, PreparedStatement> cache, String sql)
+            throws SQLException {
+        if (cache == null) {
+            return connection.prepareStatement(sql);
+        }
+        PreparedStatement existing = cache.get(sql);
+        if (existing != null) {
+            try {
+                if (!existing.isClosed()) {
+                    existing.clearParameters();
+                    return existing;
+                }
+            } catch (SQLException e) {
+                cache.remove(sql);
+            }
+        }
+        PreparedStatement created = connection.prepareStatement(sql);
+        cache.put(sql, created);
+        return created;
+    }
+
+    private static void discard(
+            Map<String, PreparedStatement> cache, String sql, PreparedStatement statement) {
+        if (cache != null) {
+            cache.remove(sql);
+        }
+        try {
+            statement.close();
+        } catch (SQLException e) {
+            LOG.warn("Failed to close a failed Oracle LOB re-select statement", e);
         }
     }
 

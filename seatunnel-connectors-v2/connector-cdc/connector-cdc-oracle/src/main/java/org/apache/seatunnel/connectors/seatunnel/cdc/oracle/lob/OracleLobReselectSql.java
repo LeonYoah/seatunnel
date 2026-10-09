@@ -64,10 +64,10 @@ public final class OracleLobReselectSql {
     }
 
     /**
-     * Builds {@code SELECT lob... FROM schema.table [AS OF SCN n] WHERE pk = ?}.
+     * Builds {@code SELECT lob... FROM schema.table [AS OF SCN ?] WHERE pk = ?}.
      *
-     * <p>The commit SCN is inlined only after {@link #usableCommitScn(String)} accepts it.
-     * Identifiers are double-quoted.
+     * <p>A usable commit SCN adds a bind marker. The numeric value is not inlined, so Oracle can
+     * reuse one cursor for every execution of the same column set. Identifiers are double-quoted.
      */
     public static String buildQuery(
             String schema,
@@ -94,9 +94,7 @@ public final class OracleLobReselectSql {
         } else {
             sql.append(" FROM (SELECT * FROM ")
                     .append(quoteTable(schema, table))
-                    .append(" AS OF SCN ")
-                    .append(scn)
-                    .append(')');
+                    .append(" AS OF SCN ?)");
         }
         sql.append(" WHERE ");
         for (int i = 0; i < primaryKeyColumns.size(); i++) {

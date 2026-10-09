@@ -80,23 +80,25 @@ public class OracleIncrementalSourceOptions extends JdbcSourceOptions {
     public static final Option<Boolean> LOB_RESELECT_ENABLED =
             Options.key("lob.reselect.enabled")
                     .booleanType()
-                    .defaultValue(true)
+                    .defaultValue(false)
                     .withDescription(
-                            "When true, INSERT and UPDATE_AFTER rows re-select CLOB, NCLOB, and BLOB columns"
-                                    + " whose value is Debezium's unavailable-value placeholder. The lookup uses the"
-                                    + " primary key and, when source.commit_scn is present, AS OF SCN. DELETE and"
-                                    + " UPDATE_BEFORE placeholders are always replaced with null. Requires SELECT on"
-                                    + " the table and FLASHBACK ANY TABLE, or FLASHBACK on the table, for the"
-                                    + " committed image. Set false to skip the query and use"
-                                    + " lob.unavailable-value.handling.");
+                            "When debezium.lob.enabled is true, re-select CLOB, NCLOB, and BLOB columns whose"
+                                    + " INSERT or UPDATE_AFTER value is Debezium's unavailable-value placeholder."
+                                    + " The lookup uses the primary key and binds commit_scn as AS OF SCN ?."
+                                    + " DELETE and UPDATE_BEFORE placeholders are replaced with null. Requires"
+                                    + " SELECT and FLASHBACK ANY TABLE, or FLASHBACK on the table. Ignored unless"
+                                    + " debezium.lob.enabled is true. Setting true without that flag is rejected"
+                                    + " at startup. A re-select failure follows lob.unavailable-value.handling and"
+                                    + " does not fail the job unless that option is fail.");
 
     public static final Option<OracleLobUnavailableValueHandling> LOB_UNAVAILABLE_VALUE_HANDLING =
             Options.key("lob.unavailable-value.handling")
                     .enumType(OracleLobUnavailableValueHandling.class)
-                    .defaultValue(OracleLobUnavailableValueHandling.NULL)
+                    .defaultValue(OracleLobUnavailableValueHandling.WARN_AND_KEEP)
                     .withDescription(
-                            "What to do when a LOB unavailable-value placeholder cannot be re-selected."
-                                    + " null replaces it with null so the sentinel is not written as data."
-                                    + " fail stops the task. warn_and_keep logs a warning and keeps the"
-                                    + " placeholder. DELETE and UPDATE_BEFORE placeholders are always null.");
+                            "What to do when a LOB unavailable-value placeholder cannot be re-selected, and only"
+                                    + " when debezium.lob.enabled is true. warn_and_keep logs once and keeps the"
+                                    + " placeholder. null replaces it with null. fail stops the task. Re-select"
+                                    + " errors use the same choice and fail the job only when this option is fail."
+                                    + " null and fail are rejected at startup unless debezium.lob.enabled is true.");
 }

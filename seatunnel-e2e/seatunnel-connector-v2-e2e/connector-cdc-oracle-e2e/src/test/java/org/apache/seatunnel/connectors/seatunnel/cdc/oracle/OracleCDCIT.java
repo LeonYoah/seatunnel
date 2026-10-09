@@ -130,7 +130,7 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
     }
 
     @TestTemplate
-    public void testOracleCdcLobSnapshotAndUnchangedLobUpdate(TestContainer container)
+    public void testOracleCdcLobSnapshotStreamingAndOutOfLineInsert(TestContainer container)
             throws Exception {
         String sourceTable = "LOB_TYPES";
         String sinkTable = "SINK_LOB_TYPES";
@@ -171,11 +171,26 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
                         + sourceTable
                         + " SET VAL_VARCHAR = 'updated' WHERE ID = 1");
         executeSql(
+                "UPDATE "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " SET VAL_CLOB = 'clob-only' WHERE ID = 1");
+        executeSql(
                 "INSERT INTO "
                         + SCEHMA_NAME
                         + "."
                         + sourceTable
                         + " VALUES (2, 'second', 'clob-stream', N'nclob-stream', HEXTORAW('0A0B'))");
+        executeSql(
+                "DECLARE l_clob CLOB; BEGIN INSERT INTO "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " (ID, VAL_VARCHAR, VAL_CLOB, VAL_NCLOB, VAL_BLOB) VALUES (3, 'outline',"
+                        + " EMPTY_CLOB(), N'short-nclob', HEXTORAW('0C0D')) RETURNING VAL_CLOB INTO"
+                        + " l_clob; DBMS_LOB.WRITEAPPEND(l_clob, 4000, RPAD('a', 4000, 'a'));"
+                        + " DBMS_LOB.WRITEAPPEND(l_clob, 1000, RPAD('b', 1000, 'b')); END;");
 
         await().atMost(600000, TimeUnit.MILLISECONDS)
                 .untilAsserted(
@@ -692,6 +707,7 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
 
     private static String lobCompareSql(String schema) {
         return "SELECT ID, VAL_VARCHAR, DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 1),"
+                + " DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 4001),"
                 + " DBMS_LOB.SUBSTR(VAL_NCLOB, 4000, 1),"
                 + " RAWTOHEX(DBMS_LOB.SUBSTR(VAL_BLOB, 2000, 1))"
                 + " FROM "

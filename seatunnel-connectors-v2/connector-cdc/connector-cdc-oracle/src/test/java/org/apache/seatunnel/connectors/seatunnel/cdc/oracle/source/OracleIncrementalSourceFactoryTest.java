@@ -133,6 +133,79 @@ class OracleIncrementalSourceFactoryTest {
                                 ReadonlyConfig.fromMap(config)));
     }
 
+    @Test
+    public void rejectsEnablingLobOptionsWhenLobMiningIsOff() {
+        Map<String, Object> reselect = baseConfig();
+        reselect.put(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED.key(), true);
+        OptionValidationException reselectError =
+                Assertions.assertThrows(
+                        OptionValidationException.class,
+                        () -> OracleLobOptionValidator.validate(ReadonlyConfig.fromMap(reselect)));
+        Assertions.assertTrue(reselectError.getMessage().contains("lob.reselect.enabled=true"));
+        Assertions.assertTrue(reselectError.getMessage().contains("debezium.lob.enabled"));
+
+        Map<String, Object> nullHandling = baseConfig();
+        nullHandling.put(
+                OracleIncrementalSourceOptions.LOB_UNAVAILABLE_VALUE_HANDLING.key(),
+                OracleLobUnavailableValueHandling.NULL);
+        OptionValidationException nullError =
+                Assertions.assertThrows(
+                        OptionValidationException.class,
+                        () ->
+                                OracleLobOptionValidator.validate(
+                                        ReadonlyConfig.fromMap(nullHandling)));
+        Assertions.assertTrue(
+                nullError.getMessage().contains("lob.unavailable-value.handling=null"));
+
+        Map<String, Object> failHandling = baseConfig();
+        failHandling.put(
+                OracleIncrementalSourceOptions.LOB_UNAVAILABLE_VALUE_HANDLING.key(), "fail");
+        Map<String, String> disabled = new HashMap<String, String>();
+        disabled.put("lob.enabled", "false");
+        failHandling.put(SourceOptions.DEBEZIUM_PROPERTIES.key(), disabled);
+        Assertions.assertThrows(
+                OptionValidationException.class,
+                () -> OracleLobOptionValidator.validate(ReadonlyConfig.fromMap(failHandling)));
+    }
+
+    @Test
+    public void acceptsDefaultsAndNoOpLobOptionsWithoutLobMining() {
+        OracleLobOptionValidator.validate(ReadonlyConfig.fromMap(baseConfig()));
+        Assertions.assertFalse(
+                OracleLobOptionValidator.placeholderHandlingActive(
+                        ReadonlyConfig.fromMap(baseConfig())));
+
+        Map<String, Object> explicitNoOp = baseConfig();
+        explicitNoOp.put(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED.key(), false);
+        explicitNoOp.put(
+                OracleIncrementalSourceOptions.LOB_UNAVAILABLE_VALUE_HANDLING.key(),
+                "warn_and_keep");
+        ReadonlyConfig config = ReadonlyConfig.fromMap(explicitNoOp);
+        OracleLobOptionValidator.validate(config);
+        Assertions.assertFalse(OracleLobOptionValidator.placeholderHandlingActive(config));
+    }
+
+    @Test
+    public void lobMiningUsesReselectAndHandlingDefaultsUntilEnabled() {
+        Map<String, String> debezium = new HashMap<String, String>();
+        debezium.put("lob.enabled", " true ");
+        Map<String, Object> defaults = baseConfig();
+        defaults.put(SourceOptions.DEBEZIUM_PROPERTIES.key(), debezium);
+        ReadonlyConfig defaultConfig = ReadonlyConfig.fromMap(defaults);
+        OracleLobOptionValidator.validate(defaultConfig);
+        Assertions.assertFalse(OracleLobOptionValidator.placeholderHandlingActive(defaultConfig));
+
+        Map<String, Object> enabled = baseConfig();
+        enabled.put(SourceOptions.DEBEZIUM_PROPERTIES.key(), debezium);
+        enabled.put(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED.key(), true);
+        enabled.put(
+                OracleIncrementalSourceOptions.LOB_UNAVAILABLE_VALUE_HANDLING.key(),
+                OracleLobUnavailableValueHandling.NULL);
+        ReadonlyConfig enabledConfig = ReadonlyConfig.fromMap(enabled);
+        OracleLobOptionValidator.validate(enabledConfig);
+        Assertions.assertTrue(OracleLobOptionValidator.placeholderHandlingActive(enabledConfig));
+    }
+
     private static Map<String, Object> specificStartupConfig(long scn) {
         Map<String, Object> config = baseConfig();
         config.put(OracleIncrementalSourceOptions.STARTUP_MODE.key(), StartupMode.SPECIFIC);

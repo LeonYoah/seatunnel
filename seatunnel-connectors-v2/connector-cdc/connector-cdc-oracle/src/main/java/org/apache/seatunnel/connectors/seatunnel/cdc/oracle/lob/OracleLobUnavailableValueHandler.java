@@ -53,7 +53,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>DELETE and UPDATE_BEFORE images null the placeholder. INSERT and UPDATE_AFTER images re-select
  * the column by primary key when that is enabled. If re-select cannot run, {@link
  * OracleLobUnavailableValueHandling} decides whether to null the value, fail the task, or keep the
- * placeholder.
+ * placeholder. A {@link java.sql.SQLException} from the lookup uses that same choice and fails the
+ * task only when the mode is {@link OracleLobUnavailableValueHandling#FAIL}.
+ *
+ * <p>SQL NULL LOB columns are not re-selected. This handler runs only when Debezium {@code
+ * lob.enabled} is true, so a null is a real null. Selecting it again would overwrite an explicit
+ * NULL, including the case where {@code EMPTY_CLOB()} and a later {@code LOB_WRITE} were merged
+ * into one event.
  */
 @Slf4j
 public class OracleLobUnavailableValueHandler implements Serializable, AutoCloseable {

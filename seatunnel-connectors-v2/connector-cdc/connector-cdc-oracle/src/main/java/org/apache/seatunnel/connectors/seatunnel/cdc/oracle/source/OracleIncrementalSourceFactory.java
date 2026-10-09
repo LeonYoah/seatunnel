@@ -116,6 +116,7 @@ public class OracleIncrementalSourceFactory extends BaseChangeStreamTableSourceF
             TableSource<T, SplitT, StateT> restoreSource(
                     TableSourceFactoryContext context, List<CatalogTable> restoreTables) {
         return () -> {
+            OracleLobOptionValidator.validate(context.getOptions());
             // Load the JDBC driver in to DriverManager
             try {
                 Class.forName("oracle.jdbc.OracleDriver");

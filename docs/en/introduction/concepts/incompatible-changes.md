@@ -5,14 +5,6 @@ You need to check this document before you upgrade to related version.
 
 ## dev
 
-### Oracle CDC LOB unavailable-value placeholder
-
-- **Behavior change: the default row format no longer forwards `__debezium_unavailable_value`**
-  - **Affected component**: `seatunnel-connectors-v2/connector-cdc/connector-cdc-oracle`
-  - **Description**: Snapshot CLOB, NCLOB, and BLOB values are now read from JDBC locators even when `debezium.lob.enabled` is false or unset. Streaming events that still contain Debezium's unavailable-value placeholder on a LOB column are re-selected by primary key when `lob.reselect.enabled` is true (the default), using `AS OF SCN` when `commit_scn` is present. If re-select cannot recover the value, `lob.unavailable-value.handling` (default `null`) replaces the remaining placeholder with null. `DELETE` and `UPDATE_BEFORE` placeholders are always null.
-  - **Impact**: Sinks no longer overwrite stored LOB data with the sentinel string. Jobs that expected `__debezium_unavailable_value` in the SeaTunnel row now receive the re-selected value, or null when re-select fails. `format = COMPATIBLE_DEBEZIUM_JSON` is unchanged and still contains the placeholder.
-  - **Migration Guide**: To keep the previous pass-through behavior, set `lob.reselect.enabled = false` and `lob.unavailable-value.handling = warn_and_keep`. For the default re-select path, grant the CDC user `SELECT` on each captured table and either `FLASHBACK ANY TABLE` or `FLASHBACK` on that table. The table needs a primary key, or a key configured in `table-names-config`.
-
 ### DuckDB BIT and ENUM automatic DDL
 
 - Scalar `BIT` and `ENUM` columns with no catalog length now retain an unspecified STRING length

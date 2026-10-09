@@ -173,12 +173,85 @@ public class OracleLobUnavailableValueHandlerTest {
     }
 
     @Test
+    public void nullLobOnInsertIsNotReselected() {
+        CatalogTable table = lobTable(true);
+        RecordingReselector reselector = new RecordingReselector(null);
+        SeaTunnelRow row = row(table, RowKind.INSERT);
+        row.setField(2, null);
+        row.setField(3, new byte[] {1});
+
+        handler(reselector, true)
+                .handle(sourceRecord("123"), row, Collections.singletonList(table));
+
+        Assertions.assertNull(reselector.schema);
+        Assertions.assertNull(row.getField(2));
+        Assertions.assertArrayEquals(new byte[] {1}, (byte[]) row.getField(3));
+        Assertions.assertEquals(PLACEHOLDER, row.getField(1));
+    }
+
+    @Test
+    public void reselectSqlExceptionKeepsPlaceholderWhenConfigured() {
+        CatalogTable table = lobTable(true);
+        SeaTunnelRow row = row(table, RowKind.UPDATE_AFTER);
+        OracleLobUnavailableValueHandler handler =
+                new OracleLobUnavailableValueHandler(
+                        PLACEHOLDER,
+                        OracleLobUnavailableValueHandling.WARN_AND_KEEP,
+                        true,
+                        throwingReselector());
+
+        handler.handle(sourceRecord("9"), row, Collections.singletonList(table));
+
+        Assertions.assertEquals(PLACEHOLDER, row.getField(2));
+        Assertions.assertArrayEquals(PLACEHOLDER.getBytes(), (byte[]) row.getField(3));
+    }
+
+    @Test
+    public void reselectSqlExceptionNullsPlaceholderWhenConfigured() {
+        CatalogTable table = lobTable(true);
+        SeaTunnelRow row = row(table, RowKind.INSERT);
+        OracleLobUnavailableValueHandler handler =
+                new OracleLobUnavailableValueHandler(
+                        PLACEHOLDER,
+                        OracleLobUnavailableValueHandling.NULL,
+                        true,
+                        throwingReselector());
+
+        handler.handle(sourceRecord("9"), row, Collections.singletonList(table));
+
+        Assertions.assertNull(row.getField(2));
+        Assertions.assertNull(row.getField(3));
+    }
+
+    @Test
+    public void reselectSqlExceptionFailsOnlyWhenConfigured() {
+        CatalogTable table = lobTable(true);
+        SeaTunnelRow row = row(table, RowKind.UPDATE_AFTER);
+        OracleLobUnavailableValueHandler handler =
+                new OracleLobUnavailableValueHandler(
+                        PLACEHOLDER,
+                        OracleLobUnavailableValueHandling.FAIL,
+                        true,
+                        throwingReselector());
+
+        Assertions.assertThrows(
+                SeaTunnelException.class,
+                () -> handler.handle(sourceRecord("9"), row, Collections.singletonList(table)));
+        Assertions.assertEquals(PLACEHOLDER, row.getField(2));
+    }
+
+    @Test
     public void lobSourceTypeRecognition() {
         Assertions.assertTrue(OracleLobUnavailableValueHandler.isLobSourceType("CLOB"));
         Assertions.assertTrue(OracleLobUnavailableValueHandler.isLobSourceType("nclob"));
         Assertions.assertTrue(OracleLobUnavailableValueHandler.isLobSourceType("BLOB(4000)"));
         Assertions.assertFalse(OracleLobUnavailableValueHandler.isLobSourceType("VARCHAR2"));
         Assertions.assertFalse(OracleLobUnavailableValueHandler.isLobSourceType(null));
+    }
+
+    private static OracleLobColumnReselector throwingReselector() {
+        return new RecordingReselector(
+                null, new SQLException("ORA-00942: table or view does not exist", "42000", 942));
     }
 
     private static OracleLobUnavailableValueHandler handler(
@@ -280,6 +353,7 @@ public class OracleLobUnavailableValueHandlerTest {
 
     private static final class RecordingReselector implements OracleLobColumnReselector {
         private final Map<String, Object> values;
+        private final SQLException failure;
         private String schema;
         private String table;
         private List<String> lobColumns;
@@ -288,7 +362,12 @@ public class OracleLobUnavailableValueHandlerTest {
         private String commitScn;
 
         private RecordingReselector(Map<String, Object> values) {
+            this(values, null);
+        }
+
+        private RecordingReselector(Map<String, Object> values, SQLException failure) {
             this.values = values;
+            this.failure = failure;
         }
 
         @Override
@@ -300,6 +379,9 @@ public class OracleLobUnavailableValueHandlerTest {
                 List<Object> primaryKeyValues,
                 String commitScn)
                 throws SQLException {
+            if (failure != null) {
+                throw failure;
+            }
             this.schema = schema;
             this.table = table;
             this.lobColumns = lobColumns;

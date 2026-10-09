@@ -26,9 +26,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -38,7 +41,7 @@ public class OracleLobReselectSqlTest {
     public void buildsFlashbackQueryAndQuotesIdentifiers() {
         Assertions.assertEquals(
                 "SELECT \"VAL_CLOB\", \"A\"\"B\" FROM (SELECT * FROM \"DEBEZIUM\".\"LOB_TYPES\""
-                        + " AS OF SCN 12345) WHERE \"ID\"=? AND \"CODE\"=?",
+                        + " AS OF SCN ?) WHERE \"ID\"=? AND \"CODE\"=?",
                 OracleLobReselectSql.buildQuery(
                         "DEBEZIUM",
                         "LOB_TYPES",
@@ -113,6 +116,48 @@ public class OracleLobReselectSqlTest {
 
         Assertions.assertTrue(result.isFound());
         Assertions.assertEquals("real-clob", result.getValues().get("VAL_CLOB"));
+        verify(flashback).setLong(1, 12345L);
+        verify(flashback).setObject(2, 11);
         verify(current).setObject(1, 11);
+    }
+
+    @Test
+    public void reusesPreparedStatementForTheSameColumnSet() throws Exception {
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet resultSet = mock(ResultSet.class);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.isClosed()).thenReturn(false);
+        when(statement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getObject(1)).thenReturn("cached");
+        Map<String, PreparedStatement> cache = new HashMap<String, PreparedStatement>();
+
+        JdbcOracleLobColumnReselector.query(
+                connection,
+                cache,
+                "DEBEZIUM",
+                "LOB_TYPES",
+                Collections.singletonList("VAL_CLOB"),
+                Collections.singletonList("ID"),
+                Collections.singletonList(11),
+                "12345");
+        JdbcOracleLobColumnReselector.query(
+                connection,
+                cache,
+                "DEBEZIUM",
+                "LOB_TYPES",
+                Collections.singletonList("VAL_CLOB"),
+                Collections.singletonList("ID"),
+                Collections.singletonList(12),
+                "67890");
+
+        Assertions.assertEquals(1, cache.size());
+        verify(connection, times(1)).prepareStatement(anyString());
+        verify(statement, times(1)).clearParameters();
+        verify(statement).setLong(1, 12345L);
+        verify(statement).setLong(1, 67890L);
+        verify(statement).setObject(2, 11);
+        verify(statement).setObject(2, 12);
     }
 }

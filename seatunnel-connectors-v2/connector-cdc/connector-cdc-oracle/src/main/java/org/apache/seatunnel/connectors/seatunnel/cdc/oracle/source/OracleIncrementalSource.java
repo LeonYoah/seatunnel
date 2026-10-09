@@ -183,15 +183,23 @@ public class OracleIncrementalSource<T> extends IncrementalSource<T, JdbcSourceC
                         .setSchemaChangeEventFilter(SchemaChangeEventFilter.fromConfig(config))
                         .setTableIdTableChangeMap(tableIdStructMap)
                         .build();
+        if (!OracleLobOptionValidator.placeholderHandlingActive(config)) {
+            return (DebeziumDeserializationSchema<T>) rowSchema;
+        }
         return (DebeziumDeserializationSchema<T>)
                 new OracleLobAwareDebeziumDeserializeSchema(
                         rowSchema, createLobUnavailableValueHandler(config, debeziumProperties));
     }
 
     /**
-     * Builds the safety net that keeps Debezium's LOB placeholder out of sink rows. The placeholder
-     * string follows {@code unavailable.value.placeholder}. Re-select uses the same JDBC url and
-     * {@code database.pdb.name} as the capture connection.
+     * Builds the safety net that keeps Debezium's LOB placeholder out of sink rows. Called only
+     * when {@code debezium.lob.enabled} is true and re-select or placeholder handling is enabled.
+     * The placeholder string follows {@code unavailable.value.placeholder}. Re-select uses the same
+     * JDBC url and {@code database.pdb.name} as the capture connection.
+     *
+     * <p>SQL NULL LOB columns are not re-selected. With LOB mining on, a null is a real null;
+     * rewriting it would hide an explicit NULL. Out-of-line LOB changes are captured by LogMiner
+     * only when {@code lob.enabled} is true.
      */
     private static OracleLobUnavailableValueHandler createLobUnavailableValueHandler(
             ReadonlyConfig config, Map<String, String> debeziumProperties) {
