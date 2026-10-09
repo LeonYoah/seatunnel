@@ -466,6 +466,18 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
         byte[] bytes;
         int offset;
 
+        /**
+         * The recorded amount equals {@link String#length()} and is larger than the code point
+         * count, so offsets for this chunk are UTF-16 code units.
+         */
+        boolean utf16Units;
+
+        /**
+         * The recorded amount matches neither the code point count nor the UTF-16 length. The
+         * assembled value is the unavailable placeholder so the column can be re-selected.
+         */
+        boolean lengthAmbiguous;
+
         LobFragment(final LogMinerEvent event) {
             if (EventType.LOB_WRITE != event.getEventType()) {
                 throw new IllegalArgumentException(
@@ -480,7 +492,24 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
             // shorter. We don't expect
             // that to happen in the LogMiner events, but it doesn't hurt to check.
             final int eventLength = writeEvent.getLength();
-            if (eventLength < length()) {
+            if (!binary) {
+                int codePoints = data.codePointCount(0, data.length());
+                int utf16Length = data.length();
+                if (eventLength == utf16Length && eventLength > codePoints) {
+                    // WRITEAPPEND amount was the UTF-16 size of the buffer. The next chunk's
+                    // offset advances by that amount, so this chunk must too.
+                    utf16Units = true;
+                } else if (eventLength > codePoints) {
+                    lengthAmbiguous = true;
+                    LOGGER.warn(
+                            "LOB_WRITE amount {} at offset {} matches neither {} code points nor {} UTF-16 units. The column will be re-selected.",
+                            eventLength,
+                            offset,
+                            codePoints,
+                            utf16Length);
+                }
+            }
+            if (!lengthAmbiguous && eventLength < length()) {
                 truncate(eventLength);
             }
         }
@@ -507,16 +536,36 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
         }
 
         /**
-         * Length in LogMiner units. BLOB length is bytes. CLOB and NCLOB length is Unicode code
-         * points. LogMiner {@code DBMS_LOB.WRITE} amount/offset count one emoji as one character,
-         * while {@link String#length()} counts a surrogate pair as two.
+         * Length in the same units as this chunk's offset. BLOB length is bytes. A text chunk whose
+         * recorded amount equals its UTF-16 length uses that length. Otherwise the length is
+         * Unicode code points, because LogMiner usually counts one emoji as one character.
          */
         int length() {
-            return binary ? bytes.length : data.codePointCount(0, data.length());
+            if (binary) {
+                return bytes.length;
+            }
+            if (utf16Units) {
+                return data.length();
+            }
+            return data.codePointCount(0, data.length());
         }
 
-        private int codeUnitIndex(int codePointIndex) {
-            return data.offsetByCodePoints(0, codePointIndex);
+        private int codeUnitIndex(int index) {
+            if (utf16Units) {
+                return index;
+            }
+            return data.offsetByCodePoints(0, index);
+        }
+
+        /**
+         * A code-point chunk ends one or more units before a following chunk whose offset advanced
+         * by UTF-16 length. That difference is not a hole in the LOB.
+         */
+        boolean closesUtf16Gap(int gap) {
+            if (binary || utf16Units || gap <= 0) {
+                return false;
+            }
+            return gap == data.length() - data.codePointCount(0, data.length());
         }
 
         int end() {
@@ -601,7 +650,7 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
                 System.arraycopy(other.bytes, 0, bytes, other.offset - offset, other.bytes.length);
             } else {
                 int gap = other.offset - end();
-                if (gap > 0) {
+                if (gap > 0 && !closesUtf16Gap(gap)) {
                     data = data + spaces(gap) + other.data;
                 } else {
                     data = data + other.data;
@@ -620,11 +669,15 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
         int start = 0;
         int end = 0;
         boolean binary = false;
+        boolean lengthAmbiguous = false;
 
         int middleInserts = 0;
 
         @Override
         protected void doAdd(LobFragment fragment) {
+            if (fragment.lengthAmbiguous) {
+                lengthAmbiguous = true;
+            }
             if (fragments.isEmpty()) { // first fragment to be added
                 fragments.add(fragment);
                 start = fragment.offset;
@@ -724,6 +777,9 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
             if (isNull) {
                 return null;
             }
+            if (lengthAmbiguous) {
+                return OracleValueConverters.UNAVAILABLE_VALUE;
+            }
             if (end == 0) {
                 if (binary) {
                     return OracleValueConverters.EMPTY_BLOB_FUNCTION;
@@ -742,17 +798,22 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
             } else {
                 StringBuilder builder = new StringBuilder();
                 int offset = 0;
+                LobFragment previous = null;
                 ListIterator<LobFragment> iter = fragments.listIterator();
                 while (iter.hasNext()) {
                     LobFragment frag = iter.next();
                     if (offset < frag.offset) { // fill the holes between fragments
-                        builder.append(LobFragment.spaces(frag.offset - offset));
+                        int gap = frag.offset - offset;
+                        if (previous == null || !previous.closesUtf16Gap(gap)) {
+                            builder.append(LobFragment.spaces(gap));
+                        }
                     }
                     if (frag.length() == 0) { // may happen in rare corner cases
                         continue;
                     }
                     builder.append(frag.data);
                     offset = frag.end();
+                    previous = frag;
                 }
                 return builder.toString();
             }

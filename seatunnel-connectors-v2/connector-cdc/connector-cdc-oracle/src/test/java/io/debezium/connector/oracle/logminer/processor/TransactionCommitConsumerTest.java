@@ -20,6 +20,7 @@ package io.debezium.connector.oracle.logminer.processor;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import io.debezium.connector.oracle.OracleValueConverters;
 import io.debezium.connector.oracle.Scn;
 import io.debezium.connector.oracle.logminer.events.EventType;
 import io.debezium.connector.oracle.logminer.events.LobWriteEvent;
@@ -57,6 +58,49 @@ public class TransactionCommitConsumerTest {
         lob.add(fragment(second, 4, 4));
 
         Assertions.assertEquals(first + second, lob.merge());
+    }
+
+    @Test
+    public void mergesEmojiWhoseAmountIsUtf16UnitsWithFollowingAscii() {
+        LobUnderConstruction lob = new LobUnderConstruction();
+        lob.add(fragment("aaa", 0, 3));
+        lob.add(fragment(EMOJI, 3, 2));
+        lob.add(fragment("bbb", 5, 3));
+
+        String merged = (String) lob.merge();
+        String expected = "aaa" + EMOJI + "bbb";
+        Assertions.assertEquals(expected, merged);
+        Assertions.assertEquals(expected.length(), merged.length());
+        Assertions.assertEquals(-1, merged.indexOf(' '));
+    }
+
+    @Test
+    public void abutsAsciiWhenTheNextOffsetJumpsByTheEmojiUtf16Length() {
+        LobUnderConstruction lob = new LobUnderConstruction();
+        lob.add(fragment(EMOJI, 0, 1));
+        lob.add(fragment("abc", 2, 3));
+
+        String merged = (String) lob.merge();
+        Assertions.assertEquals(EMOJI + "abc", merged);
+        Assertions.assertEquals((EMOJI + "abc").length(), merged.length());
+    }
+
+    @Test
+    public void keepsARealHoleBetweenAsciiChunks() {
+        LobUnderConstruction lob = new LobUnderConstruction();
+        lob.add(fragment("aa", 0, 2));
+        lob.add(fragment("bb", 4, 2));
+
+        Assertions.assertEquals("aa  bb", lob.merge());
+    }
+
+    @Test
+    public void reselectsWhenAmountMatchesNeitherCodePointsNorUtf16Length() {
+        LobUnderConstruction lob = new LobUnderConstruction();
+        lob.add(fragment(EMOJI + EMOJI, 0, 3));
+        lob.add(fragment("a", 3, 1));
+
+        Assertions.assertSame(OracleValueConverters.UNAVAILABLE_VALUE, lob.merge());
     }
 
     @Test

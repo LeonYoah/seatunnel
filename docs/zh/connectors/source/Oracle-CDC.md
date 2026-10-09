@@ -280,7 +280,7 @@ CLOB、NCLOB 与 BLOB 按以下方式采集。这适用于默认的 SeaTunnel �
 
 重新查询需要主键，或在 `table-names-config` 中配置的键。请为 CDC 用户授予表上的 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。`AS OF SCN` 还要求该 SCN 对应的 undo 仍然保留。安全网开启时，`XMLTYPE` 与 CLOB 一样处理占位符。见 [XMLTYPE 列](#xmltype-列)。
 
-行外 CLOB、NCLOB 的 `DBMS_LOB.WRITE` 长度和偏移按字符计数。一个 emoji 在 LogMiner 里是 1 个字符，在 Java 里是 2 个 UTF-16 码元。连接器按 Unicode 码点截断并合并每个文本分片，因此不会把一个分片从代理对中间切开。BLOB 的长度仍按字节计算。如果 LogMiner 自己把一个代理对拆进了两个分片，连接器会按收到的内容保留。覆盖写入并前截断后续分片时，偏移更新仍与 Debezium 一致：先缩短缓冲区再更新偏移，因此该分片的偏移不会前移。顺序的 `LOB_WRITE` 分片（LogMiner 的常见形态）不受影响。
+行外 CLOB、NCLOB 的 `DBMS_LOB.WRITE` 长度和偏移通常按字符计数。这种 redo 里一个 emoji 是 1 个字符，在 Java 里是 2 个 UTF-16 码元，连接器按 Unicode 码点合并这些分片，因此不会从代理对中间切开。记录的 amount 等于载荷的 UTF-16 长度、且大于码点数时，该分片按 UTF-16 码元合并，使下一分片紧挨着它。amount 与两种长度都不相符时，该列输出不可用值占位符，以便重新查询。BLOB 的长度仍按字节计算。如果 LogMiner 自己把一个代理对拆进了两个分片，连接器会按收到的内容保留。覆盖写入并前截断后续分片时，偏移更新仍与 Debezium 一致：先缩短缓冲区再更新偏移，因此该分片的偏移不会前移。顺序的 `LOB_WRITE` 分片（LogMiner 的常见形态）不受影响。
 
 在挖掘 LOB redo 的同时重新查询占位符：
 
