@@ -42,11 +42,13 @@ So, you can not set this property named `log.mining.continuous.mine` in the debe
 
 > 1. You need to ensure that the [jdbc driver jar package](https://mvnrepository.com/artifact/com.oracle.database.jdbc/ojdbc8) has been placed in directory `${SEATUNNEL_HOME}/plugins/`.
 > 2. To support the i18n character set, copy the `orai18n.jar` to the `$SEATUNNEL_HOME/plugins/` directory.
+> 3. To capture `XMLTYPE` columns, also copy `xdb` and `xmlparserv2` (the same Oracle version as `ojdbc8`, for example 19.18) into `${SEATUNNEL_HOME}/plugins/`. See [XMLTYPE columns](#xmltype-columns).
 
 #### For SeaTunnel Zeta Engine
 
 > 1. You need to ensure that the [jdbc driver jar package](https://mvnrepository.com/artifact/com.oracle.database.jdbc/ojdbc8) has been placed in directory `${SEATUNNEL_HOME}/lib/`.
 > 2. To support the i18n character set, copy the `orai18n.jar` to the `$SEATUNNEL_HOME/lib/` directory.
+> 3. To capture `XMLTYPE` columns, also copy `xdb` and `xmlparserv2` (the same Oracle version as `ojdbc8`, for example 19.18) into `${SEATUNNEL_HOME}/lib/`. See [XMLTYPE columns](#xmltype-columns).
 
 ### Enable Oracle Logminer
 
@@ -215,7 +217,7 @@ exit;
 | NUMBER(scale != 0)                                                                   | DECIMAL(38, 18)     |
 | BINARY_DOUBLE                                                                        | DOUBLE              |
 | BINARY_FLOAT<br/>REAL                                                                | FLOAT               |
-| CHAR<br/>NCHAR<br/>NVARCHAR2<br/>VARCHAR2<br/>LONG<br/>ROWID<br/>NCLOB<br/>CLOB<br/> | STRING              |
+| CHAR<br/>NCHAR<br/>NVARCHAR2<br/>VARCHAR2<br/>LONG<br/>ROWID<br/>NCLOB<br/>CLOB<br/>XMLTYPE<br/> | STRING              |
 | DATE                                                                                 | DATE                |
 | TIMESTAMP<br/>TIMESTAMP WITH LOCAL TIME ZONE                                         | TIMESTAMP           |
 | BLOB<br/>RAW<br/>LONG RAW<br/>BFILE                                                  | BYTES               |
@@ -256,7 +258,7 @@ exit;
 | schema-changes.enabled                    | Boolean  | No        | false   | Schema evolution is disabled by default. Now we only support `add column`、`drop column`、`rename column` and `modify column`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | schema-changes.include                     | List     | No        | -       | Only the listed schema change event types are sent downstream (when `schema-changes.enabled = true`). Empty means all are eligible. See [Schema change event filtering](#schema-change-event-filtering).                                                                                                                                                                                                                                                                                                                                                                                                             |
 | schema-changes.exclude                     | List     | No        | -       | Schema change event types listed here are NOT sent downstream. Applied after `schema-changes.include`; exclude wins on conflict. See [Schema change event filtering](#schema-change-event-filtering).                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| lob.reselect.enabled                      | Boolean  | No        | false   | When `debezium.lob.enabled` is true, re-select CLOB, NCLOB, and BLOB columns that still contain Debezium's unavailable-value placeholder on INSERT and UPDATE_AFTER. The lookup uses the primary key and binds a positive numeric `commit_scn` as `AS OF SCN ?`. The prepared statement is reused for the same table and column set. DELETE and UPDATE_BEFORE placeholders are null when this safety net is on. Requires SELECT and `FLASHBACK ANY TABLE`, or `FLASHBACK` on the table. A re-select failure follows `lob.unavailable-value.handling` and does not fail the job unless that option is `fail`. Setting true while `debezium.lob.enabled` is not true is rejected when the job is submitted. See [LOB columns](#lob-columns). |
+| lob.reselect.enabled                      | Boolean  | No        | false   | When `debezium.lob.enabled` is true, re-select CLOB, NCLOB, BLOB, and XMLTYPE columns that still contain Debezium's unavailable-value placeholder on INSERT and UPDATE_AFTER. The lookup uses the primary key and binds a positive numeric `commit_scn` as `AS OF SCN ?`. The prepared statement is reused for the same table and column set. DELETE and UPDATE_BEFORE placeholders are null when this safety net is on. Requires SELECT and `FLASHBACK ANY TABLE`, or `FLASHBACK` on the table. A re-select failure follows `lob.unavailable-value.handling` and does not fail the job unless that option is `fail`. Setting true while `debezium.lob.enabled` is not true is rejected when the job is submitted. See [LOB columns](#lob-columns). |
 | lob.unavailable-value.handling            | Enum     | No        | warn_and_keep | What to do with a LOB unavailable-value placeholder, and only when `debezium.lob.enabled` is true. `warn_and_keep` (default) leaves the row unchanged unless `lob.reselect.enabled` is also true, in which case a value that still cannot be re-selected is kept and logged once. `null` replaces a remaining placeholder with null. `fail` stops the task. `null` and `fail` are rejected at job submission unless `debezium.lob.enabled` is true. Re-select errors use the same choice. |
 | debezium                                  | Config   | No        | -       | Pass-through [Debezium's properties](https://github.com/debezium/debezium/blob/v1.9.8.Final/documentation/modules/ROOT/pages/connectors/oracle.adoc#connector-properties) to Debezium Embedded Engine which is used to capture data changes from Oracle server.                                                                                                                                                                                                                                                                                                                                                      |
 | common-options                            |          | no        | -       | Source plugin common parameters, please refer to [Source Common Options](../common-options/source-common-options.md) for details                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -277,7 +279,9 @@ The defaults `lob.reselect.enabled = false` and `lob.unavailable-value.handling 
 - `INSERT` and `UPDATE_AFTER` re-select only the placeholder LOB columns by primary key when `lob.reselect.enabled` is `true`. A SQL `NULL` is not re-selected. With LOB mining on, null is a real null, and selecting it again would hide an explicit `NULL`. When the event source has a positive numeric `commit_scn`, the query is `SELECT cols FROM (SELECT * FROM schema.table AS OF SCN ?) WHERE pk = ?`. The SCN is a bind variable, and the prepared statement is reused for the same table and column set. If flashback is unavailable (`ORA-01555`, `ORA-01466`, `ORA-08181`, or `ORA-01031`), the connector queries the current row and logs a warning. The current row can differ if the row changed again after the original commit.
 - If re-select cannot recover a value, `lob.unavailable-value.handling` applies. `warn_and_keep` logs once per table and keeps the placeholder. `null` replaces the remaining placeholder with null. `fail` stops the task. A re-select error, including `SQLException`, uses that same choice and fails the job only when the option is `fail`.
 
-Re-select needs a primary key, or a key set in `table-names-config`. Grant the CDC user `SELECT` on the table and either `FLASHBACK ANY TABLE` or `FLASHBACK` on that table. `AS OF SCN` also needs undo retained for that SCN. `XMLTYPE` is not treated as a LOB.
+Re-select needs a primary key, or a key set in `table-names-config`. Grant the CDC user `SELECT` on the table and either `FLASHBACK ANY TABLE` or `FLASHBACK` on that table. `AS OF SCN` also needs undo retained for that SCN. `XMLTYPE` uses the same placeholder safety net as CLOB when that net is on. See [XMLTYPE columns](#xmltype-columns).
+
+Out-of-line CLOB and NCLOB `DBMS_LOB.WRITE` length and offset are character counts. One emoji is one character in LogMiner and two UTF-16 code units in Java. The connector truncates and merges each text chunk by Unicode code point, so a chunk is not cut through a surrogate pair. BLOB length stays in bytes. A chunk that LogMiner itself splits between the two units of a pair is kept as received. An overlapping write that front-truncates a later fragment still follows Debezium's offset update, which runs after the buffer shrinks, so that fragment's offset does not advance. Sequential `LOB_WRITE` chunks, the usual LogMiner shape, are unaffected.
 
 To re-select placeholders while mining LOB redo:
 
@@ -290,6 +294,27 @@ Oracle-CDC {
   }
 }
 ```
+
+## XMLTYPE columns
+
+`XMLTYPE` columns are captured when `debezium.lob.enabled` is true. LogMiner emits `XML_BEGIN` (68), `XML_WRITE` (70), and `XML_END` (71). The connector assembles those events into one string and merges that string into the surrounding INSERT or UPDATE, the same way it assembles `LOB_WRITE`. When `debezium.lob.enabled` is not true, those operation codes are not mined and the handlers return immediately.
+
+The SeaTunnel value is STRING. Debezium maps JDBC `SQLXML` to `io.debezium.data.Xml`. `XMLTYPE` and `SYS.XMLTYPE` are already mapped to STRING. Put `xdb` and `xmlparserv2` on the connector classpath, same Oracle version as `ojdbc8` (19.18 in this build), so the driver reports the column as `SQLXML`. Both jars are `provided` dependencies of `connector-cdc-oracle`. Copy them next to `ojdbc8`. See [Install Jdbc Driver](#install-jdbc-driver).
+
+`xmlparserv2` registers an Oracle SAX parser. If XML parsing in the process fails after those jars are added, start the engine with:
+
+`-Djavax.xml.parsers.SAXParserFactory=com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl`
+
+When the LOB placeholder safety net is on, an unchanged `XMLTYPE` column that still holds the unavailable-value placeholder is re-selected like a CLOB. The JDBC read uses `SQLXML.getString()`, or `getStringVal()` on `oracle.xdb.XMLType`. Setting the column to NULL is recognized when LogMiner emits `XML_REDO := NULL`.
+
+This connector forks Debezium 1.9.8 LogMiner. The following are outside that port:
+
+- `XMLTYPE` tables. An `XMLTYPE` column on a relational table is supported. A table whose row type is `XMLTYPE` is not.
+- `XMLTYPE STORE AS CLOB`, and other CLOB-stored XML that LogMiner emits as `LOB_WRITE` rather than `XML_WRITE`. That path landed in Debezium 3.4 / 3.5 and is not back-ported here.
+- DDL that adds an `XMLTYPE` column. The 1.9.8 DDL grammar has no `XMLTYPE` token, so a later Debezium DDL fix does not apply. A snapshot still sees existing `XMLTYPE` columns through JDBC metadata.
+- Infinispan embedded or remote transaction buffers. Their marshallers were not regenerated for the XML events. The default in-memory buffer is the supported buffer.
+- XStream. This connector reads redo with LogMiner.
+- Debezium's hybrid mining strategy, and the later rule that hybrid mining cannot be combined with `lob.enabled`. Debezium 1.9.8 only provides `online_catalog` and `redo_log_catalog`.
 
 ## Task Example
 
@@ -589,6 +614,10 @@ Treat this primarily as a database and redo-log tuning topic. Reuse the LogMiner
 supplemental logging sections above first, enable logging only for the required tables, and add
 Debezium passthrough tuning only after validating that those properties are supported in the exact
 Oracle CDC runtime you are deploying.
+
+### How are XMLTYPE columns captured?
+
+See [XMLTYPE columns](#xmltype-columns). Streaming capture needs `debezium.lob.enabled = true`, plus `xdb` and `xmlparserv2` next to the Oracle JDBC driver. An `XMLTYPE` table is not supported.
 
 ### How are CLOB, NCLOB, and BLOB columns captured?
 

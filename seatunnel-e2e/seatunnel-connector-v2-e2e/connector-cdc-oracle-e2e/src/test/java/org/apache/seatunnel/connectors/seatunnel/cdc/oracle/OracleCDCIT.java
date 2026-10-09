@@ -191,6 +191,21 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
                         + " EMPTY_CLOB(), N'short-nclob', HEXTORAW('0C0D')) RETURNING VAL_CLOB INTO"
                         + " l_clob; DBMS_LOB.WRITEAPPEND(l_clob, 4000, RPAD('a', 4000, 'a'));"
                         + " DBMS_LOB.WRITEAPPEND(l_clob, 1000, RPAD('b', 1000, 'b')); END;");
+        // 100 grinning-face characters. LogMiner counts each emoji as one character.
+        // DBMS_LOB.SUBSTR of 4000 emoji would exceed VARCHAR2's 4000-byte limit, so the
+        // compare below uses GETLENGTH plus a 100-character window.
+        executeSql(
+                "DECLARE c_chunk VARCHAR2(800); n_chunk NVARCHAR2(100); l_clob CLOB; l_nclob NCLOB;"
+                        + " BEGIN c_chunk := RPAD(UNISTR('\\D83D\\DE00'), 100, UNISTR('\\D83D\\DE00'));"
+                        + " n_chunk := RPAD(UNISTR('\\D83D\\DE00'), 100, UNISTR('\\D83D\\DE00'));"
+                        + " INSERT INTO "
+                        + SCEHMA_NAME
+                        + "."
+                        + sourceTable
+                        + " (ID, VAL_VARCHAR, VAL_CLOB, VAL_NCLOB, VAL_BLOB) VALUES (4, 'emoji',"
+                        + " EMPTY_CLOB(), EMPTY_CLOB(), HEXTORAW('0E0F')) RETURNING VAL_CLOB,"
+                        + " VAL_NCLOB INTO l_clob, l_nclob; DBMS_LOB.WRITEAPPEND(l_clob, 100,"
+                        + " c_chunk); DBMS_LOB.WRITEAPPEND(l_nclob, 100, n_chunk); END;");
 
         await().atMost(600000, TimeUnit.MILLISECONDS)
                 .untilAsserted(
@@ -706,9 +721,11 @@ public class OracleCDCIT extends AbstractOracleCDCIT implements TestResource {
     }
 
     private static String lobCompareSql(String schema) {
-        return "SELECT ID, VAL_VARCHAR, DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 1),"
+        return "SELECT ID, VAL_VARCHAR, DBMS_LOB.GETLENGTH(VAL_CLOB),"
+                + " DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 1),"
                 + " DBMS_LOB.SUBSTR(VAL_CLOB, 4000, 4001),"
-                + " DBMS_LOB.SUBSTR(VAL_NCLOB, 4000, 1),"
+                + " DBMS_LOB.GETLENGTH(VAL_NCLOB),"
+                + " DBMS_LOB.SUBSTR(VAL_NCLOB, 100, 1),"
                 + " RAWTOHEX(DBMS_LOB.SUBSTR(VAL_BLOB, 2000, 1))"
                 + " FROM "
                 + schema

@@ -82,7 +82,7 @@ public class OracleIncrementalSourceOptions extends JdbcSourceOptions {
                     .booleanType()
                     .defaultValue(false)
                     .withDescription(
-                            "When debezium.lob.enabled is true, re-select CLOB, NCLOB, and BLOB columns whose"
+                            "When debezium.lob.enabled is true, re-select CLOB, NCLOB, BLOB, and XMLTYPE columns whose"
                                     + " INSERT or UPDATE_AFTER value is Debezium's unavailable-value placeholder."
                                     + " The lookup uses the primary key and binds commit_scn as AS OF SCN ?."
                                     + " DELETE and UPDATE_BEFORE placeholders are replaced with null. Requires"
