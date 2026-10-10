@@ -158,7 +158,17 @@ public class OracleIncrementalSource<T> extends IncrementalSource<T, JdbcSourceC
         configFactory.useSelectCount(config.get(OracleIncrementalSourceOptions.USE_SELECT_COUNT));
         configFactory.skipAnalyze(config.get(OracleIncrementalSourceOptions.SKIP_ANALYZE));
         configFactory.originUrl(config.get(JdbcCommonOptions.URL));
+        applyLobEnabled(config, configFactory);
         return configFactory;
+    }
+
+    /**
+     * Copies an explicit {@code lob.enabled} onto the Debezium properties. An omitted option does
+     * not overwrite {@code debezium.lob.enabled}.
+     */
+    static void applyLobEnabled(ReadonlyConfig config, OracleSourceConfigFactory configFactory) {
+        config.getOptional(OracleIncrementalSourceOptions.LOB_ENABLED)
+                .ifPresent(enabled -> configFactory.lobEnabled(enabled));
     }
 
     @SuppressWarnings("unchecked")
@@ -193,8 +203,8 @@ public class OracleIncrementalSource<T> extends IncrementalSource<T, JdbcSourceC
 
     /**
      * Builds the safety net that keeps Debezium's LOB placeholder out of sink rows. Called only
-     * when {@code debezium.lob.enabled} is true and re-select or placeholder handling is enabled.
-     * The placeholder string follows {@code unavailable.value.placeholder}. Re-select uses the same
+     * when {@code lob.enabled} is true and re-select or placeholder handling is enabled. The
+     * placeholder string follows {@code unavailable.value.placeholder}. Re-select uses the same
      * JDBC url and {@code database.pdb.name} as the capture connection.
      *
      * <p>SQL NULL LOB columns are not re-selected. With LOB mining on, a null is a real null;

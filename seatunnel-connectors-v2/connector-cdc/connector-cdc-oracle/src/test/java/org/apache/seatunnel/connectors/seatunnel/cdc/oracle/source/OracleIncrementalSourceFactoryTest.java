@@ -30,7 +30,10 @@ import org.apache.seatunnel.connectors.cdc.base.source.offset.Offset;
 import org.apache.seatunnel.connectors.cdc.base.source.offset.OffsetFactory;
 import org.apache.seatunnel.connectors.cdc.base.source.split.IncrementalSplit;
 import org.apache.seatunnel.connectors.cdc.base.source.split.state.IncrementalSplitState;
+import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.config.OracleSourceConfig;
+import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.config.OracleSourceConfigFactory;
 import org.apache.seatunnel.connectors.seatunnel.cdc.oracle.source.offset.RedoLogOffset;
+import org.apache.seatunnel.connectors.seatunnel.jdbc.config.JdbcCommonOptions;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -142,7 +145,8 @@ class OracleIncrementalSourceFactoryTest {
                         OptionValidationException.class,
                         () -> OracleLobOptionValidator.validate(ReadonlyConfig.fromMap(reselect)));
         Assertions.assertTrue(reselectError.getMessage().contains("lob.reselect.enabled=true"));
-        Assertions.assertTrue(reselectError.getMessage().contains("debezium.lob.enabled"));
+        Assertions.assertTrue(reselectError.getMessage().contains("lob.enabled"));
+        Assertions.assertFalse(reselectError.getMessage().contains("debezium.lob.enabled ="));
 
         Map<String, Object> nullHandling = baseConfig();
         nullHandling.put(
@@ -206,6 +210,44 @@ class OracleIncrementalSourceFactoryTest {
         Assertions.assertTrue(OracleLobOptionValidator.placeholderHandlingActive(enabledConfig));
     }
 
+    @Test
+    public void seatunnelLobEnabledPassesThroughAndOverridesDebezium() {
+        Map<String, Object> enabled = captureConfig();
+        enabled.put(OracleIncrementalSourceOptions.LOB_ENABLED.key(), true);
+        enabled.put(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED.key(), true);
+        ReadonlyConfig enabledConfig = ReadonlyConfig.fromMap(enabled);
+        OracleLobOptionValidator.validate(enabledConfig);
+        Assertions.assertTrue(OracleLobOptionValidator.placeholderHandlingActive(enabledConfig));
+        Assertions.assertEquals("true", debeziumLobEnabled(enabledConfig));
+
+        Map<String, String> debezium = new HashMap<String, String>();
+        debezium.put("lob.enabled", "true");
+        Map<String, Object> overridden = captureConfig();
+        overridden.put(SourceOptions.DEBEZIUM_PROPERTIES.key(), debezium);
+        overridden.put(OracleIncrementalSourceOptions.LOB_ENABLED.key(), false);
+        overridden.put(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED.key(), true);
+        ReadonlyConfig overriddenConfig = ReadonlyConfig.fromMap(overridden);
+        Assertions.assertThrows(
+                OptionValidationException.class,
+                () -> OracleLobOptionValidator.validate(overriddenConfig));
+        Assertions.assertEquals("false", debeziumLobEnabled(overriddenConfig));
+
+        Map<String, Object> legacy = captureConfig();
+        legacy.put(SourceOptions.DEBEZIUM_PROPERTIES.key(), debezium);
+        ReadonlyConfig legacyConfig = ReadonlyConfig.fromMap(legacy);
+        OracleLobOptionValidator.validate(legacyConfig);
+        Assertions.assertEquals("true", debeziumLobEnabled(legacyConfig));
+    }
+
+    private static String debeziumLobEnabled(ReadonlyConfig config) {
+        OracleSourceConfigFactory configFactory = new OracleSourceConfigFactory();
+        configFactory.fromReadonlyConfig(config);
+        configFactory.originUrl(config.get(JdbcCommonOptions.URL));
+        OracleIncrementalSource.applyLobEnabled(config, configFactory);
+        OracleSourceConfig sourceConfig = configFactory.create(0);
+        return sourceConfig.getOriginDbzConnectorConfig().getString("lob.enabled");
+    }
+
     private static Map<String, Object> specificStartupConfig(long scn) {
         Map<String, Object> config = baseConfig();
         config.put(OracleIncrementalSourceOptions.STARTUP_MODE.key(), StartupMode.SPECIFIC);
@@ -218,6 +260,18 @@ class OracleIncrementalSourceFactoryTest {
         config.put(OracleIncrementalSourceOptions.USERNAME.key(), "user");
         config.put(OracleIncrementalSourceOptions.PASSWORD.key(), "password");
         config.put(ConnectorCommonOptions.TABLE_NAMES.key(), Arrays.asList("ORCL.TEST"));
+        return config;
+    }
+
+    private static Map<String, Object> captureConfig() {
+        Map<String, Object> config = baseConfig();
+        config.put(JdbcCommonOptions.URL.key(), "jdbc:oracle:thin:@//localhost:1521/ORCLCDB");
+        config.put(
+                OracleIncrementalSourceOptions.DATABASE_NAMES.key(),
+                Collections.singletonList("ORCLCDB"));
+        config.put(
+                OracleIncrementalSourceOptions.SCHEMA_NAMES.key(),
+                Collections.singletonList("DEBEZIUM"));
         return config;
     }
 

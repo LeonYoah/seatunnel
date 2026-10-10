@@ -28,24 +28,23 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Links Oracle LOB placeholder handling to Debezium {@code lob.enabled}.
+ * Links Oracle LOB placeholder handling to LogMiner LOB mining.
  *
- * <p>Streaming rows are left unchanged unless {@code debezium.lob.enabled} is true and the user
- * turns on re-select or a non-default placeholder handling mode. Setting those enabling values
- * while LOB mining is off is rejected when the source is created, before any redo is read.
+ * <p>Mining follows the SeaTunnel option {@code lob.enabled} when it is set. That value is copied
+ * onto Debezium {@code lob.enabled}. When the SeaTunnel option is omitted, {@code
+ * debezium.lob.enabled} is used and left unchanged. Streaming rows stay unchanged unless mining is
+ * on and the user turns on re-select or a non-default placeholder handling mode.
  */
 public final class OracleLobOptionValidator {
-
-    static final String LOB_ENABLED_KEY = "lob.enabled";
 
     private OracleLobOptionValidator() {}
 
     /**
-     * Rejects enabling LOB options when Debezium will not mine LOB redo. Defaults are accepted and
+     * Rejects enabling LOB options when LogMiner will not mine LOB redo. Defaults are accepted and
      * do not change streaming behavior.
      */
     public static void validate(ReadonlyConfig config) {
-        if (isDebeziumLobEnabled(config)) {
+        if (isLobMiningEnabled(config)) {
             return;
         }
         List<String> enabling = enablingOptions(config);
@@ -54,12 +53,10 @@ public final class OracleLobOptionValidator {
         }
         throw new OptionValidationException(
                 String.format(
-                        "Oracle CDC rejected %s because debezium.lob.enabled is not true. "
-                                + "Streaming LOB rows stay unchanged unless LogMiner LOB mining is enabled. "
-                                + "Set debezium.lob.enabled = \"true\" before lob.reselect.enabled=true "
+                        "Oracle CDC rejected %s because lob.enabled is not true. "
+                                + "Set lob.enabled = true before lob.reselect.enabled=true "
                                 + "or lob.unavailable-value.handling of null or fail. "
-                                + "The defaults (lob.reselect.enabled=false, "
-                                + "lob.unavailable-value.handling=warn_and_keep) do not change existing jobs.",
+                                + "debezium.lob.enabled is still accepted when lob.enabled is omitted.",
                         enabling));
     }
 
@@ -68,7 +65,7 @@ public final class OracleLobOptionValidator {
      * exactly as Debezium emitted them.
      */
     public static boolean placeholderHandlingActive(ReadonlyConfig config) {
-        if (!isDebeziumLobEnabled(config)) {
+        if (!isLobMiningEnabled(config)) {
             return false;
         }
         boolean reselect = config.get(OracleIncrementalSourceOptions.LOB_RESELECT_ENABLED);
@@ -77,13 +74,26 @@ public final class OracleLobOptionValidator {
         return reselect || handling != OracleLobUnavailableValueHandling.WARN_AND_KEEP;
     }
 
+    /**
+     * Whether LogMiner will mine LOB redo. An explicit SeaTunnel {@code lob.enabled} wins over
+     * {@code debezium.lob.enabled}.
+     */
+    static boolean isLobMiningEnabled(ReadonlyConfig config) {
+        Optional<Boolean> lobEnabled =
+                config.getOptional(OracleIncrementalSourceOptions.LOB_ENABLED);
+        if (lobEnabled.isPresent()) {
+            return Boolean.TRUE.equals(lobEnabled.get());
+        }
+        return isDebeziumLobEnabled(config);
+    }
+
     static boolean isDebeziumLobEnabled(ReadonlyConfig config) {
         Optional<Map<String, String>> properties =
                 config.getOptional(SourceOptions.DEBEZIUM_PROPERTIES);
         if (!properties.isPresent() || properties.get() == null) {
             return false;
         }
-        String value = properties.get().get(LOB_ENABLED_KEY);
+        String value = properties.get().get(OracleIncrementalSourceOptions.LOB_ENABLED.key());
         return value != null && "true".equalsIgnoreCase(value.trim());
     }
 

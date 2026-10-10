@@ -257,65 +257,39 @@ exit;
 | schema-changes.enabled                    | Boolean  | 否      | false   | Schema 演进默认禁用。目前我们仅支持 `add column`、`drop column`、`rename column` 和 `modify column`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | schema-changes.include                     | List     | 否      | -       | 仅向下游发送列出的 schema change 事件类型（需 `schema-changes.enabled = true`）。为空表示全部允许。详见 [Schema change 事件过滤](#schema-change-事件过滤)。                                                                                                                                                                                                                                                                                                                          |
 | schema-changes.exclude                     | List     | 否      | -       | 此处列出的 schema change 事件类型不会发送到下游。在 `schema-changes.include` 之后应用；冲突时 exclude 优先。详见 [Schema change 事件过滤](#schema-change-事件过滤)。                                                                                                                                                                                                                                                                                                                   |
-| lob.reselect.enabled                      | Boolean  | 否      | false   | 仅当 `debezium.lob.enabled` 为 true 时，对 INSERT 与 UPDATE_AFTER 中仍为 Debezium 不可用占位符的 CLOB、NCLOB、BLOB、XMLTYPE 列按主键重新查询。正整数 `commit_scn` 以绑定变量写入 `AS OF SCN ?`，同一张表、同一组列会复用 PreparedStatement。开启该安全网后，DELETE 与 UPDATE_BEFORE 中的占位符替换为 null。需要表上的 SELECT，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。重新查询失败时遵循 `lob.unavailable-value.handling`，只有该选项为 `fail` 时才会使任务失败。在 `debezium.lob.enabled` 不为 true 时设为 true，会在作业提交阶段被拒绝。详见 [LOB 列](#lob-列)。 |
-| lob.unavailable-value.handling            | Enum     | 否      | warn_and_keep | 仅当 `debezium.lob.enabled` 为 true 时，如何处理 LOB 不可用值占位符。默认 `warn_and_keep` 在 `lob.reselect.enabled` 也为 false 时不改写行；若同时开启重新查询，仍无法恢复的值会保留并按表记录一次警告。`null` 把剩余占位符替换为 null。`fail` 使任务失败。`null` 与 `fail` 在 `debezium.lob.enabled` 不为 true 时会在作业提交阶段被拒绝。重新查询错误使用同一选项。 |
+| lob.enabled                               | Boolean  | 否      | false   | 透传给 Debezium `lob.enabled`。`true` 时挖掘 CLOB、NCLOB、BLOB 和 XMLTYPE 的 redo。不设置时，`debezium.lob.enabled` 保持原样。显式设置会覆盖它。详见 [LOB 列](#lob-列)。 |
+| lob.reselect.enabled                      | Boolean  | 否      | false   | 开启 LOB 挖掘后，对 INSERT 与 UPDATE_AFTER 中仍为占位符的 CLOB、NCLOB、BLOB、XMLTYPE 按主键重新查询（有 `commit_scn` 时使用 `AS OF SCN`）。DELETE 与 UPDATE_BEFORE 中的占位符变为 null。需要 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。未开启挖掘时会被拒绝。 |
+| lob.unavailable-value.handling            | Enum     | 否      | warn_and_keep | 仍无法恢复的占位符如何处理：`warn_and_keep`（默认）、`null` 或 `fail`。`null` 和 `fail` 在未开启 LOB 挖掘时会被拒绝。 |
 | debezium                                  | Config   | 否      | -       | 透传 [Debezium 属性](https://github.com/debezium/debezium/blob/v1.9.8.Final/documentation/modules/ROOT/pages/connectors/oracle.adoc#connector-properties) 给 Debezium Embedded Engine，该引擎用于捕获 Oracle 服务器的数据更改。                                                                                                                                                                                                                                                                                                                                                      |
 | common-options                            |          | 否      | -       | 源端插件常用参数，详情请参阅 [源端常用选项](../common-options/source-common-options.md)。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## LOB 列
 
-CLOB、NCLOB 与 BLOB 按以下方式采集。这适用于默认的 SeaTunnel 行格式。`format = COMPATIBLE_DEBEZIUM_JSON` 会保留原始 Debezium 信封，其中仍包含不可用值占位符。
+快照会读出真实的 CLOB、NCLOB、BLOB。流式 redo 只有在 `lob.enabled = true` 时才会挖掘。该值会透传给 Debezium。未设置 `lob.enabled` 时，`debezium.lob.enabled` 仍然有效；显式设置的 `lob.enabled` 会覆盖它。
 
-**快照。** 初始快照通过 JDBC 读取 LOB 定位器，并把真实列值写入变更事件。无论 Debezium `lob.enabled` 是否为 `true` 都会如此。嵌入的 Debezium 1.9.8 在 `lob.enabled = false`（默认值，SeaTunnel 不会主动设置）时，会把这些 JDBC 定位器转成 null；对 `NOT NULL` 列则会转成空字符串或零长度字节。
+未开启挖掘时，行外 LOB 插入经常是 null，只改 LOB 的更新可能丢失。此时 `lob.reselect.enabled = true`，以及 `lob.unavailable-value.handling` 为 `null` 或 `fail`，会在提交作业时被拒绝。不设置这些选项的已有作业，流式行为保持不变。
 
-**流式，且 `debezium.lob.enabled` 不为 true。** LogMiner 不会挖掘 `LOB_WRITE` redo。行外 LOB 插入会先记录 `EMPTY_CLOB()` / `EMPTY_BLOB()`，再记录 `LOB_WRITE`。Debezium 1.9.8 把这个空标记转成 null，只修改 LOB 的更新可能根本不产生行变更。SeaTunnel 不会额外查询，也不会改写这些行，因此已有作业的流式行为保持不变。将 `lob.reselect.enabled` 设为 true，或将 `lob.unavailable-value.handling` 设为 `null` / `fail`，会在创建 source 时被拒绝，提示必须先设置 `debezium.lob.enabled = "true"`。显式的 `false` 与 `warn_and_keep` 可以接受，且不改变行为。
+开启挖掘后，语句未修改的 LOB 列是占位符 `__debezium_unavailable_value`（可用 `debezium.unavailable.value.placeholder` 覆盖）。没有后续写入的 `EMPTY_CLOB()` / `EMPTY_BLOB()` 是空字符串或空字节。SQL `NULL` 仍是 null。跨 LogMiner 分片的 emoji 和其他多字节字符会保留。
 
-**流式，且 `debezium.lob.enabled` 为 true。** LogMiner 会挖掘 LOB redo，包括 `LOB_WRITE`。语句未修改的 LOB 列仍会填入不可用值占位符。默认占位符是 `__debezium_unavailable_value`，可通过 `debezium.unavailable.value.placeholder` 覆盖。BLOB 的占位符是该字符串在 JVM 默认字符集下的字节，这与 Debezium 1.9.8 的比较方式一致。没有后续 `LOB_WRITE` 的显式 `EMPTY_CLOB()` 或 `EMPTY_BLOB()` 会变成空字符串或零长度字节，与 JDBC 快照读到的空定位器一致。SQL `NULL` 仍是 null。
+`lob.reselect.enabled = false` 和 `warn_and_keep` 不会查询 Oracle，也不会改行。要补上占位符：
 
-默认值 `lob.reselect.enabled = false` 与 `lob.unavailable-value.handling = warn_and_keep` 即使开启了 LOB 挖掘，也不会查询 Oracle，也不会改写行。只有 `lob.reselect.enabled` 为 true，或 handling 为 `null` / `fail` 时，安全网才会生效：
+- DELETE 与 UPDATE_BEFORE 中的占位符变为 null。非 LOB 列不变。
+- INSERT 与 UPDATE_AFTER 只按主键重新查询仍为占位符的列。正数 `commit_scn` 会绑定为 `AS OF SCN`。闪回失败时（`ORA-01555`、`ORA-01466`、`ORA-08181`、`ORA-01031`）改为读当前行。
+- 仍读不到的值按 `lob.unavailable-value.handling` 处理：`warn_and_keep` 每张表记一次日志，`null` 替换为 null，`fail` 停止任务。
 
-- `DELETE` 与 `UPDATE_BEFORE` 将 LOB 占位符替换为 null。恰好等于占位符的 `VARCHAR2` 等非 LOB 列保持原值。
-- `lob.reselect.enabled` 为 `true` 时，`INSERT` 与 `UPDATE_AFTER` 只按主键重新查询仍为占位符的 LOB 列。SQL `NULL` 不会被重新查询。开启 LOB 挖掘后，null 就是真实的 null，再次查询会掩盖显式的 `NULL`。事件 source 中存在正整数 `commit_scn` 时，查询为 `SELECT cols FROM (SELECT * FROM schema.table AS OF SCN ?) WHERE pk = ?`。SCN 是绑定变量，同一张表、同一组列会复用 PreparedStatement。闪回不可用时（`ORA-01555`、`ORA-01466`、`ORA-08181` 或 `ORA-01031`），连接器改为查询当前行并记录警告。若该行在原始提交之后又被修改，当前行可能与当时的值不同。
-- 重新查询无法恢复值时，由 `lob.unavailable-value.handling` 决定。`warn_and_keep` 按表记录一次警告并保留占位符。`null` 把剩余占位符替换为 null。`fail` 使任务失败。包括 `SQLException` 在内的重新查询错误使用同一选项，只有选项为 `fail` 时才会使作业失败。
-
-重新查询需要主键，或在 `table-names-config` 中配置的键。请为 CDC 用户授予表上的 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。`AS OF SCN` 还要求该 SCN 对应的 undo 仍然保留。安全网开启时，`XMLTYPE` 与 CLOB 一样处理占位符。见 [XMLTYPE 列](#xmltype-列)。
-
-行外 CLOB、NCLOB 的 `DBMS_LOB.WRITE` 长度和偏移通常按字符计数。这种 redo 里一个 emoji 是 1 个字符，在 Java 里是 2 个 UTF-16 码元，连接器按 Unicode 码点合并这些分片，因此不会从代理对中间切开。记录的 amount 等于载荷的 UTF-16 长度、且大于码点数时，该分片按 UTF-16 码元合并，使下一分片紧挨着它。amount 与两种长度都不相符时，该列输出不可用值占位符，以便重新查询。BLOB 的长度仍按字节计算。如果 LogMiner 自己把一个代理对拆进了两个分片，连接器会按收到的内容保留。覆盖写入并前截断后续分片时，偏移更新仍与 Debezium 一致：先缩短缓冲区再更新偏移，因此该分片的偏移不会前移。顺序的 `LOB_WRITE` 分片（LogMiner 的常见形态）不受影响。
-
-在挖掘 LOB redo 的同时重新查询占位符：
-
-```hocon
-Oracle-CDC {
-  lob.reselect.enabled = true
-  lob.unavailable-value.handling = "null"
-  debezium {
-    lob.enabled = "true"
-  }
-}
-```
+重新查询需要主键，或 `table-names-config` 里的键，以及 `SELECT` 和 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。`format = COMPATIBLE_DEBEZIUM_JSON` 会保留原始信封，包括占位符。完整作业见 [采集 LOB 列](#采集-lob-列)。
 
 ## XMLTYPE 列
 
-`debezium.lob.enabled` 为 true 时采集 `XMLTYPE` 列。LogMiner 产生 `XML_BEGIN`（68）、`XML_WRITE`（70）和 `XML_END`（71）。连接器把这些事件拼成一个字符串，并合并进同一条 INSERT 或 UPDATE，方式与 `LOB_WRITE` 相同。`debezium.lob.enabled` 不为 true 时，挖掘语句不包含这些操作码，处理函数直接返回。
+`lob.enabled = true` 时，关系表上的 `XMLTYPE` 列也会采集，SeaTunnel 类型为 STRING。请把与 `ojdbc8` 相同版本的 `xdb` 和 `xmlparserv2` 放在 Oracle JDBC 驱动旁边。见 [安装 Jdbc 驱动](#安装-jdbc-驱动)。
 
-行外 `XML_WRITE` 分片是 `HEXTORAW` 字节序列。连接器保留这些字节，在拼装整篇文档时一次性按 UTF-8 解码。若对每个分片单独解码，跨分片的多字节字符会变成 U+FFFD。行内 `XML_WRITE` 是带引号的 SQL 文本，按字符拼接，跨两个引号分片的代理对也会保留。
-
-SeaTunnel 中的值类型是 STRING。Debezium 把 JDBC `SQLXML` 映射为 `io.debezium.data.Xml`。`XMLTYPE` 与 `SYS.XMLTYPE` 本来就映射为 STRING。请把与 `ojdbc8` 相同版本的 `xdb` 和 `xmlparserv2`（本构建为 19.18）放到连接器类路径上，驱动才会把该列报告为 `SQLXML`。二者都是 `connector-cdc-oracle` 的 `provided` 依赖，请与 `ojdbc8` 放在一起。见 [安装 Jdbc 驱动](#安装-jdbc-驱动)。
-
-`xmlparserv2` 会注册 Oracle 的 SAX 解析器。加入这些 jar 后如果进程里的 XML 解析失败，启动引擎时加上：
+加入这些 jar 后如果 XML 解析失败，启动引擎时加上：
 
 `-Djavax.xml.parsers.SAXParserFactory=com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl`
 
-LOB 占位符安全网开启时，语句未修改、仍为不可用值占位符的 `XMLTYPE` 列会像 CLOB 一样被重新查询。JDBC 读取使用 `SQLXML.getString()`，或 `oracle.xdb.XMLType` 的 `getStringVal()`。LogMiner 写出 `XML_REDO := NULL` 时，该列被识别为置 NULL。
+语句未修改的 `XMLTYPE` 列与 CLOB 使用同一套占位符和重新查询规则。
 
-本连接器基于 Debezium 1.9.8 的 LogMiner。以下内容不在这次移植范围内：
-
-- `XMLTYPE` 表。关系表上的 `XMLTYPE` 列可以采集。行类型本身是 `XMLTYPE` 的表不支持。
-- `XMLTYPE STORE AS CLOB`，以及 LogMiner 以 `LOB_WRITE` 而不是 `XML_WRITE` 记录的 CLOB 存储 XML。该路径在 Debezium 3.4 / 3.5 才合入，这里没有回移植。
-- 增加 `XMLTYPE` 列的 DDL。1.9.8 的 DDL 语法没有 `XMLTYPE` 记号，因此后续 Debezium 的 DDL 修复无法套用。快照仍能通过 JDBC 元数据看到已经存在的 `XMLTYPE` 列。
-- Infinispan 嵌入式或远程事务缓冲。它们的序列化器没有为 XML 事件重新生成。默认的内存缓冲是可用路径。
-- XStream。本连接器使用 LogMiner 读取 redo。
-- Debezium 后来的 hybrid 挖掘策略，以及 hybrid 不能与 `lob.enabled` 同时开启的限制。Debezium 1.9.8 只有 `online_catalog` 和 `redo_log_catalog`。
+不支持：行类型为 `XMLTYPE` 的表、`XMLTYPE STORE AS CLOB`，以及新增 `XMLTYPE` 列的 DDL。快照仍能看到已经存在的 `XMLTYPE` 列。
 
 ## 任务示例
 
@@ -339,6 +313,36 @@ source {
     debezium {
       database.oracle.jdbc.timezoneAsRegion = "false"
     }
+  }
+}
+```
+
+### 采集 LOB 列
+
+`lob.enabled` 会透传给 Debezium。`lob.reselect.enabled` 用来补上语句未修改的 LOB 列。
+
+```sql
+CREATE TABLE DEBEZIUM.LOB_TYPES (
+  ID NUMBER(9) NOT NULL PRIMARY KEY,
+  VAL_CLOB CLOB,
+  VAL_BLOB BLOB,
+  VAL_NCLOB NCLOB
+);
+ALTER TABLE DEBEZIUM.LOB_TYPES ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+```
+
+```conf
+source {
+  Oracle-CDC {
+    url = "jdbc:oracle:thin:@//oracle-host:1521/ORCLCDB"
+    username = "c##dbzuser"
+    password = "dbz"
+    database-names = ["ORCLCDB"]
+    schema-names = ["DEBEZIUM"]
+    table-names = ["ORCLCDB.DEBEZIUM.LOB_TYPES"]
+    lob.enabled = true
+    lob.reselect.enabled = true
+    lob.unavailable-value.handling = "null"
   }
 }
 ```
@@ -612,11 +616,11 @@ Debezium 透传属性后，再引入额外调优参数。
 
 ### XMLTYPE 列如何采集？
 
-见 [XMLTYPE 列](#xmltype-列)。流式采集需要 `debezium.lob.enabled = true`，并在 Oracle JDBC 驱动旁放置 `xdb` 与 `xmlparserv2`。`XMLTYPE` 表不支持。
+见 [XMLTYPE 列](#xmltype-列)。设置 `lob.enabled = true`，并把 `xdb` 与 `xmlparserv2` 放在 Oracle JDBC 驱动旁边。
 
 ### CLOB、NCLOB、BLOB 列如何采集？
 
-见 [LOB 列](#lob-列)。即使 `debezium.lob.enabled` 为 false，快照也会返回真实 LOB 值。流式占位符重新查询仅在 `debezium.lob.enabled` 为 true，且 `lob.reselect.enabled` 为 true 或 `lob.unavailable-value.handling` 为 `null` / `fail` 时执行。默认值（`false`、`warn_and_keep`）不改变流式行。未开启 `debezium.lob.enabled = true` 就启用这些选项，会在作业提交阶段被拒绝。使用 `AS OF SCN` 时，CDC 用户需要 `SELECT`，以及 `FLASHBACK ANY TABLE` 或该表上的 `FLASHBACK`。
+见 [LOB 列](#lob-列) 和 [采集 LOB 列](#采集-lob-列)。设置 `lob.enabled = true` 挖掘流式 LOB redo。语句未修改的 LOB 列需要补值时，再加上 `lob.reselect.enabled = true`。
 
 ### 支持哪些 Oracle 版本？
 
