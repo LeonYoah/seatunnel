@@ -77,28 +77,37 @@ public class OracleIncrementalSourceOptions extends JdbcSourceOptions {
                     .defaultValue(false)
                     .withDescription("Skip the analysis of table count in full stage");
 
+    public static final Option<Boolean> LOB_ENABLED =
+            Options.key("lob.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Pass through to Debezium lob.enabled. true mines CLOB, NCLOB, BLOB, and"
+                                    + " XMLTYPE redo. When omitted, debezium.lob.enabled is left unchanged."
+                                    + " An explicit value overrides debezium.lob.enabled.");
+
     public static final Option<Boolean> LOB_RESELECT_ENABLED =
             Options.key("lob.reselect.enabled")
                     .booleanType()
                     .defaultValue(false)
                     .withDescription(
-                            "When debezium.lob.enabled is true, re-select CLOB, NCLOB, BLOB, and XMLTYPE columns whose"
-                                    + " INSERT or UPDATE_AFTER value is Debezium's unavailable-value placeholder."
-                                    + " The lookup uses the primary key and binds commit_scn as AS OF SCN ?."
-                                    + " DELETE and UPDATE_BEFORE placeholders are replaced with null. Requires"
-                                    + " SELECT and FLASHBACK ANY TABLE, or FLASHBACK on the table. Ignored unless"
-                                    + " debezium.lob.enabled is true. Setting true without that flag is rejected"
-                                    + " at startup. A re-select failure follows lob.unavailable-value.handling and"
-                                    + " does not fail the job unless that option is fail.");
+                            "With lob.enabled true and this option false, a LOB column an UPDATE did not"
+                                    + " change, and LOB columns on DELETE and UPDATE_BEFORE, are the"
+                                    + " unavailable-value placeholder. A sink that writes the whole row"
+                                    + " replaces the stored value with that placeholder. true re-selects those"
+                                    + " CLOB, NCLOB, BLOB, and XMLTYPE columns on INSERT and UPDATE_AFTER by"
+                                    + " primary key, binding commit_scn as AS OF SCN ?, and DELETE and"
+                                    + " UPDATE_BEFORE placeholders become null. Rejected unless lob.enabled"
+                                    + " is true. A re-select failure follows lob.unavailable-value.handling.");
 
     public static final Option<OracleLobUnavailableValueHandling> LOB_UNAVAILABLE_VALUE_HANDLING =
             Options.key("lob.unavailable-value.handling")
                     .enumType(OracleLobUnavailableValueHandling.class)
                     .defaultValue(OracleLobUnavailableValueHandling.WARN_AND_KEEP)
                     .withDescription(
-                            "What to do when a LOB unavailable-value placeholder cannot be re-selected, and only"
-                                    + " when debezium.lob.enabled is true. warn_and_keep logs once and keeps the"
-                                    + " placeholder. null replaces it with null. fail stops the task. Re-select"
-                                    + " errors use the same choice and fail the job only when this option is fail."
-                                    + " null and fail are rejected at startup unless debezium.lob.enabled is true.");
+                            "The placeholder remains when re-select is off, the table has no primary key,"
+                                    + " or the lookup fails, and a full-row sink write would store it."
+                                    + " warn_and_keep logs once and keeps it. null replaces it with null so"
+                                    + " the sink does not store the placeholder. fail stops the task. null"
+                                    + " and fail are rejected unless lob.enabled is true.");
 }
