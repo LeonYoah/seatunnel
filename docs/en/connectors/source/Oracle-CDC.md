@@ -268,25 +268,23 @@ exit;
 
 ## LOB columns
 
-Oracle stores large CLOB, NCLOB, and BLOB values outside the row. A streaming insert is then logged as an empty LOB followed by the real LOB redo, and an update that only changes the LOB may not appear as a normal row change. With `lob.enabled` left false, that insert often arrives as null and the LOB-only update can be missed. The snapshot does not have this problem: JDBC reads the real value.
+What you see: large values live outside the row. With `lob.enabled` unset, a streaming LOB insert is often null, and an update that only changes the LOB can be missed. The snapshot is unaffected: JDBC reads the real value.
 
-`lob.enabled = true` mines that redo. The value is passed through to Debezium. If you omit it, `debezium.lob.enabled` still applies; an explicit `lob.enabled` overrides it. An `EMPTY_CLOB()` / `EMPTY_BLOB()` with no later write is an empty string or empty bytes. SQL `NULL` stays null. Setting `lob.reselect.enabled = true`, or `lob.unavailable-value.handling` to `null` or `fail`, while mining is off is rejected. Jobs that leave those options unset keep the previous streaming behavior.
+`lob.enabled = true` mines that redo and passes the value through to Debezium. If you omit it, `debezium.lob.enabled` still applies; an explicit `lob.enabled` overrides it. An `EMPTY_CLOB()` / `EMPTY_BLOB()` with no later write is an empty string or empty bytes. SQL `NULL` stays null. Setting `lob.reselect.enabled = true`, or `lob.unavailable-value.handling` to `null` or `fail`, while mining is off is rejected.
 
-After mining is on, a LOB column the statement did not change is still the placeholder `__debezium_unavailable_value` (`debezium.unavailable.value.placeholder` overrides it). The same placeholder is used for LOB columns on DELETE and UPDATE_BEFORE. A sink that writes the whole row then replaces the value it already stored with that placeholder. `lob.reselect.enabled = true` looks the column up by primary key and puts the Oracle value back on INSERT and UPDATE_AFTER. A positive `commit_scn` is bound as `AS OF SCN`. If flashback fails (`ORA-01555`, `ORA-01466`, `ORA-08181`, `ORA-01031`), the current row is read. DELETE and UPDATE_BEFORE placeholders become null, so they are not written downstream. This needs a primary key, or a key in `table-names-config`. The grants are in [What Oracle permissions are required for CDC?](#what-oracle-permissions-are-required-for-cdc).
+What you see next: with mining on and `lob.reselect.enabled` left false, a LOB column the UPDATE did not change, and LOB columns on DELETE and UPDATE_BEFORE, stay the placeholder `__debezium_unavailable_value`. A sink that writes the whole row replaces the stored value with that placeholder.
 
-If the placeholder is still there because re-select is off, the table has no key, or the lookup fails, `lob.unavailable-value.handling` decides what the sink receives. `warn_and_keep` logs once per table and keeps the placeholder. `null` replaces it with null. `fail` stops the task. The defaults (`lob.reselect.enabled = false`, `warn_and_keep`) do not query Oracle and do not change the row.
+`lob.reselect.enabled = true` fills that value by primary key (`AS OF SCN` when `commit_scn` is present). If flashback fails (`ORA-01555`, `ORA-01466`, `ORA-08181`, `ORA-01031`), the current row is read. DELETE and UPDATE_BEFORE placeholders become null. A primary key is required, or a key in `table-names-config`. Grants are in [What Oracle permissions are required for CDC?](#what-oracle-permissions-are-required-for-cdc).
+
+When the placeholder is still there (re-select is off, there is no primary key, or the lookup fails), `lob.unavailable-value.handling` decides what the sink receives. `warn_and_keep` (default) keeps the placeholder, `null` replaces it with null, and `fail` stops the task. The defaults `false` and `warn_and_keep` do not query Oracle and do not change the row.
 
 `format = COMPATIBLE_DEBEZIUM_JSON` keeps the raw envelope, including the placeholder. A full job is in [Capture LOB columns](#capture-lob-columns).
 
 ## XMLTYPE columns
 
-An `XMLTYPE` column on a relational table is stored like a LOB. Without `lob.enabled = true`, streaming events after the snapshot do not contain the XML document, so the column is empty or null. With mining on, an XML column the statement did not change is the same placeholder as a CLOB. A full-row UPDATE or DELETE then replaces the XML already stored in the sink with that placeholder.
+What you see: an `XMLTYPE` column on a relational table is stored like a LOB. Without `lob.enabled`, streaming events after the snapshot have no XML document, so the column is empty or null. With mining on, an XML column the statement did not change is the same placeholder, and a full-row sink write replaces the stored XML with it.
 
-`lob.enabled = true` captures the column as STRING. Copy `xdb` and `xmlparserv2` (same version as `ojdbc8`) next to the Oracle JDBC driver so the driver reports the column as XML. See [Install Jdbc Driver](#install-jdbc-driver). Unchanged XML columns use the same re-select and `lob.unavailable-value.handling` rules as CLOB.
-
-`xmlparserv2` registers an Oracle SAX parser. If XML parsing in the process fails after those jars are added, start the engine with:
-
-`-Djavax.xml.parsers.SAXParserFactory=com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl`
+`lob.enabled = true` captures the column as STRING. Put `xdb` and `xmlparserv2` (same version as `ojdbc8`) next to the driver. See [Install Jdbc Driver](#install-jdbc-driver). Placeholders use the same re-select and handling as CLOB. If XML parsing fails after those jars are added, start the engine with `-Djavax.xml.parsers.SAXParserFactory=com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl`.
 
 Not supported: a table whose row type is `XMLTYPE`, `XMLTYPE STORE AS CLOB`, and DDL that adds an `XMLTYPE` column. A snapshot still sees `XMLTYPE` columns that already exist.
 

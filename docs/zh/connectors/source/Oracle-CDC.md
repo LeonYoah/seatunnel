@@ -267,27 +267,25 @@ exit;
 
 ## LOB 列
 
-Oracle 把较大的 CLOB、NCLOB、BLOB 存在行外。流式插入会先记成空 LOB，再记真正的 LOB redo；只改 LOB 的更新也可能不像普通行变更那样出现。`lob.enabled` 不设置时，这种插入经常是 null，只改 LOB 的更新可能丢失。快照没有这个问题，JDBC 会读出真实值。
+现象：大字段存在行外。不设 `lob.enabled` 时，流式插入的 LOB 经常是 null，只改 LOB 的更新可能丢失。快照不受影响，JDBC 会读出真实值。
 
-`lob.enabled = true` 开始挖掘这些 redo，并把该值透传给 Debezium。不设置时，`debezium.lob.enabled` 仍然有效；显式设置会覆盖它。没有后续写入的 `EMPTY_CLOB()` / `EMPTY_BLOB()` 是空字符串或空字节。SQL `NULL` 仍是 null。没开挖掘就把 `lob.reselect.enabled` 设为 true，或把 `lob.unavailable-value.handling` 设为 `null` / `fail`，提交作业时会被拒绝。不设置这些选项的已有作业，流式行为保持不变。
+`lob.enabled = true` 开始挖掘这些 redo，值透传给 Debezium。不设置时，`debezium.lob.enabled` 仍然有效；显式设置会覆盖它。没有后续写入的 `EMPTY_CLOB()` / `EMPTY_BLOB()` 是空字符串或空字节，SQL `NULL` 仍是 null。没开挖掘就把 `lob.reselect.enabled` 设为 true，或把 `lob.unavailable-value.handling` 设为 `null` / `fail`，提交时会被拒绝。
 
-挖掘打开后，这次语句没改到的 LOB 列仍是占位符 `__debezium_unavailable_value`（可用 `debezium.unavailable.value.placeholder` 覆盖）。DELETE 和 UPDATE_BEFORE 里的 LOB 列也是这个占位符。按整行更新的 sink 会把库里原来的值盖成占位符。`lob.reselect.enabled = true` 在 INSERT 和 UPDATE_AFTER 上按主键再查该列，用库里的值换掉占位符。正数 `commit_scn` 会绑定为 `AS OF SCN`。闪回失败时（`ORA-01555`、`ORA-01466`、`ORA-08181`、`ORA-01031`）改为读当前行。DELETE 和 UPDATE_BEFORE 里的占位符改为 null，避免写进下游。需要主键，或 `table-names-config` 里的键。授权见 [Oracle CDC 需要哪些数据库权限？](#oracle-cdc-需要哪些数据库权限)。
+现象：挖掘打开后，如果不设 `lob.reselect.enabled`，UPDATE 里这次没改到的 LOB 列，以及 DELETE、UPDATE_BEFORE 里的 LOB 列，仍是占位符 `__debezium_unavailable_value`。按整行更新的 sink 会把库里原来的值盖成这个占位符。
 
-占位符还在，是因为重新查询没开、没有主键，或查询失败。这时由 `lob.unavailable-value.handling` 决定 sink 收到什么。`warn_and_keep` 按表记一次日志并保留占位符。`null` 换成 null。`fail` 停止任务。默认 `lob.reselect.enabled = false` 和 `warn_and_keep` 不查库，也不改行。
+`lob.reselect.enabled = true` 按主键补上这个值（有 `commit_scn` 时用 `AS OF SCN`）。闪回失败（`ORA-01555`、`ORA-01466`、`ORA-08181`、`ORA-01031`）时改读当前行。DELETE 和 UPDATE_BEFORE 里的占位符改为 null。需要主键，或 `table-names-config` 里的键。授权见 [Oracle CDC 需要哪些数据库权限？](#oracle-cdc-需要哪些数据库权限)。
+
+占位符还在时（重新查询没开、没有主键，或查询失败），由 `lob.unavailable-value.handling` 决定下游看到什么。`warn_and_keep`（默认）保留占位符，`null` 换成 null，`fail` 停止任务。默认 `false` 和 `warn_and_keep` 不查库、不改行。
 
 `format = COMPATIBLE_DEBEZIUM_JSON` 会保留原始信封，包括占位符。完整作业见 [采集 LOB 列](#采集-lob-列)。
 
 ## XMLTYPE 列
 
-关系表上的 `XMLTYPE` 按 LOB 存放。不设 `lob.enabled = true` 时，快照之后的流式事件里没有 XML 正文，列是空的或 null。挖掘打开后，这次语句没改到的 XML 列和 CLOB 一样是占位符。按整行写入的 UPDATE 或 DELETE 会把 sink 里已经存着的 XML 盖成这个占位符。
+现象：关系表上的 `XMLTYPE` 按 LOB 存放。不设 `lob.enabled` 时，快照之后的流式事件里没有 XML 正文，列是空的或 null。挖掘打开后，语句没改到的 XML 列同样是占位符，按整行写入的 sink 会把已存的 XML 盖掉。
 
-`lob.enabled = true` 把该列采成 STRING。请把与 `ojdbc8` 相同版本的 `xdb` 和 `xmlparserv2` 放在 Oracle JDBC 驱动旁边，驱动才会把列报告为 XML。见 [安装 Jdbc 驱动](#安装-jdbc-驱动)。没改到的 XML 列使用和 CLOB 相同的重新查询与 `lob.unavailable-value.handling`。
+`lob.enabled = true` 把该列采成 STRING。需要把与 `ojdbc8` 同版本的 `xdb`、`xmlparserv2` 放在驱动旁边，见 [安装 Jdbc 驱动](#安装-jdbc-驱动)。占位符用上面同一套重新查询和处理。加入这些 jar 后如果 XML 解析失败，启动引擎时加上 `-Djavax.xml.parsers.SAXParserFactory=com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl`。
 
-加入这些 jar 后如果 XML 解析失败，启动引擎时加上：
-
-`-Djavax.xml.parsers.SAXParserFactory=com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl`
-
-不支持：行类型为 `XMLTYPE` 的表、`XMLTYPE STORE AS CLOB`，以及新增 `XMLTYPE` 列的 DDL。已经存在的列，快照仍能看到。
+不支持：行类型本身是 `XMLTYPE` 的表、`XMLTYPE STORE AS CLOB`、以及新增 `XMLTYPE` 列的 DDL。已经存在的列，快照仍能看到。
 
 ## 任务示例
 
