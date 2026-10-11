@@ -270,7 +270,7 @@ exit;
 
 What you see: large values live outside the row. With `lob.enabled` unset, a streaming LOB insert is often null, and an update that only changes the LOB can be missed. The snapshot is unaffected: JDBC reads the real value.
 
-`lob.enabled = true` mines that redo and passes the value through to Debezium. If you omit it, `debezium.lob.enabled` still applies; an explicit `lob.enabled` overrides it. An `EMPTY_CLOB()` / `EMPTY_BLOB()` with no later write is an empty string or empty bytes. SQL `NULL` stays null. Setting `lob.reselect.enabled = true`, or `lob.unavailable-value.handling` to `null` or `fail`, while mining is off is rejected.
+`lob.enabled = true` mines that redo and passes the value through to Debezium. If you omit it, `debezium.lob.enabled` still applies; an explicit `lob.enabled` overrides it. An `EMPTY_CLOB()` / `EMPTY_BLOB()` with no later write is an empty string or empty bytes. SQL `NULL` stays null. Events for the same row in one transaction are merged, and a later SQL `NULL` replaces the earlier value. The unavailable placeholder still means the column was absent from that redo record and is left unchanged. Setting `lob.reselect.enabled = true`, or `lob.unavailable-value.handling` to `null` or `fail`, while mining is off is rejected.
 
 What you see next: with mining on and `lob.reselect.enabled` left false, a LOB column the UPDATE did not change, and LOB columns on DELETE and UPDATE_BEFORE, stay the placeholder `__debezium_unavailable_value`. A sink that writes the whole row replaces the stored value with that placeholder.
 

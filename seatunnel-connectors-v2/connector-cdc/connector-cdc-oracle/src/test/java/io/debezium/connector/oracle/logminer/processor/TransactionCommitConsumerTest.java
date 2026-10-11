@@ -20,17 +20,32 @@ package io.debezium.connector.oracle.logminer.processor;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import io.debezium.config.Configuration;
+import io.debezium.connector.oracle.OracleConnectorConfig;
+import io.debezium.connector.oracle.OracleDatabaseSchema;
 import io.debezium.connector.oracle.OracleValueConverters;
 import io.debezium.connector.oracle.Scn;
+import io.debezium.connector.oracle.logminer.events.DmlEvent;
 import io.debezium.connector.oracle.logminer.events.EventType;
 import io.debezium.connector.oracle.logminer.events.LobWriteEvent;
+import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntry;
+import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntryImpl;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.LobFragment;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.LobUnderConstruction;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.XmlFragment;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.XmlUnderConstruction;
+import io.debezium.relational.Column;
+import io.debezium.relational.Table;
+import io.debezium.relational.TableEditor;
 import io.debezium.relational.TableId;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TransactionCommitConsumerTest {
 
@@ -141,6 +156,88 @@ public class TransactionCommitConsumerTest {
     }
 
     @Test
+    public void mergesALaterNullOverAnEarlierLobUpdate() throws InterruptedException {
+        Table table = table("ID", "NAME", "VAL_CLOB");
+        List<DmlEvent> emitted = new ArrayList<>();
+        TransactionCommitConsumer consumer = consumer(table, emitted);
+
+        consumer.accept(
+                dml(
+                        EventType.UPDATE,
+                        table.id(),
+                        LogMinerDmlEntryImpl.forUpdate(
+                                new Object[] {1, "alice", "lob-text"},
+                                new Object[] {1, "old", null})));
+        consumer.accept(
+                dml(
+                        EventType.UPDATE,
+                        table.id(),
+                        LogMinerDmlEntryImpl.forUpdate(
+                                new Object[] {1, null, OracleValueConverters.UNAVAILABLE_VALUE},
+                                new Object[] {
+                                    1, "alice", OracleValueConverters.UNAVAILABLE_VALUE
+                                })));
+        consumer.close();
+
+        Assertions.assertEquals(1, emitted.size());
+        Object[] merged = emitted.get(0).getDmlEntry().getNewValues();
+        Assertions.assertEquals(1, merged[0]);
+        Assertions.assertNull(merged[1]);
+        Assertions.assertEquals("lob-text", merged[2]);
+    }
+
+    @Test
+    public void mergesALaterNullOverAnInsertWithoutLobColumns() throws InterruptedException {
+        Table table = table("ID", "VER");
+        List<DmlEvent> emitted = new ArrayList<>();
+        TransactionCommitConsumer consumer = consumer(table, emitted);
+
+        consumer.accept(
+                dml(
+                        EventType.INSERT,
+                        table.id(),
+                        LogMinerDmlEntryImpl.forInsert(new Object[] {1, 7})));
+        consumer.accept(
+                dml(
+                        EventType.UPDATE,
+                        table.id(),
+                        LogMinerDmlEntryImpl.forUpdate(
+                                new Object[] {1, null}, new Object[] {1, 7})));
+        consumer.close();
+
+        Assertions.assertEquals(1, emitted.size());
+        Assertions.assertEquals(EventType.INSERT, emitted.get(0).getEventType());
+        Object[] merged = emitted.get(0).getDmlEntry().getNewValues();
+        Assertions.assertEquals(1, merged[0]);
+        Assertions.assertNull(merged[1]);
+    }
+
+    @Test
+    public void mergesALaterNullOverAnEarlierUpdateWithoutLobColumns() throws InterruptedException {
+        Table table = table("ID", "VER");
+        List<DmlEvent> emitted = new ArrayList<>();
+        TransactionCommitConsumer consumer = consumer(table, emitted);
+
+        consumer.accept(
+                dml(
+                        EventType.UPDATE,
+                        table.id(),
+                        LogMinerDmlEntryImpl.forUpdate(new Object[] {1, 7}, new Object[] {1, 6})));
+        consumer.accept(
+                dml(
+                        EventType.UPDATE,
+                        table.id(),
+                        LogMinerDmlEntryImpl.forUpdate(
+                                new Object[] {1, null}, new Object[] {1, 7})));
+        consumer.close();
+
+        Assertions.assertEquals(1, emitted.size());
+        Object[] merged = emitted.get(0).getDmlEntry().getNewValues();
+        Assertions.assertEquals(1, merged[0]);
+        Assertions.assertNull(merged[1]);
+    }
+
+    @Test
     public void assemblesXmlFragmentsInOrder() {
         XmlUnderConstruction xml = XmlUnderConstruction.fromInitialValue(null);
         Assertions.assertNull(xml.merge());
@@ -148,6 +245,37 @@ public class TransactionCommitConsumerTest {
         xml.add(new XmlFragment("<root>"));
         xml.add(new XmlFragment(EMOJI + "</root>"));
         Assertions.assertEquals("<root>" + EMOJI + "</root>", xml.merge());
+    }
+
+    private static TransactionCommitConsumer consumer(Table table, List<DmlEvent> emitted) {
+        OracleDatabaseSchema schema = mock(OracleDatabaseSchema.class);
+        when(schema.tableFor(any(TableId.class))).thenReturn(table);
+        OracleConnectorConfig config =
+                new OracleConnectorConfig(
+                        Configuration.create()
+                                .with(OracleConnectorConfig.SERVER_NAME, "test_server")
+                                .with(OracleConnectorConfig.HOSTNAME, "localhost")
+                                .with(OracleConnectorConfig.USER, "test")
+                                .with(OracleConnectorConfig.PASSWORD, "test")
+                                .with(OracleConnectorConfig.LOB_ENABLED, true)
+                                .build());
+        return new TransactionCommitConsumer(
+                (event, processed) -> emitted.add((DmlEvent) event), config, schema);
+    }
+
+    private static Table table(String... columnNames) {
+        TableEditor editor = Table.editor().tableId(TABLE);
+        int position = 1;
+        for (String name : columnNames) {
+            editor.addColumn(Column.editor().name(name).position(position++).create());
+        }
+        editor.setPrimaryKeyNames(columnNames[0]);
+        return editor.create();
+    }
+
+    private static DmlEvent dml(EventType eventType, TableId tableId, LogMinerDmlEntry entry) {
+        return new DmlEvent(
+                eventType, Scn.valueOf(1), tableId, "AAABBB", "0x1.2.3", Instant.EPOCH, entry);
     }
 
     private static LobFragment fragment(String data, int offset, int length) {

@@ -369,8 +369,9 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
         Object[] intoVals = newValues(into);
         Object[] fromVals = newValues(from);
         for (int i = 0; i < intoVals.length; i++) {
-            if (fromVals[i] != null
-                    && !OracleValueConverters.UNAVAILABLE_VALUE.equals(fromVals[i])) {
+            // A later SQL NULL is an intentional change. Only the unavailable placeholder means
+            // the redo did not include this column.
+            if (!OracleValueConverters.UNAVAILABLE_VALUE.equals(fromVals[i])) {
                 LOGGER.trace(
                         "\t\tMerge column {}: replacing {} with {}.", i, intoVals[i], fromVals[i]);
                 intoVals[i] = fromVals[i];
