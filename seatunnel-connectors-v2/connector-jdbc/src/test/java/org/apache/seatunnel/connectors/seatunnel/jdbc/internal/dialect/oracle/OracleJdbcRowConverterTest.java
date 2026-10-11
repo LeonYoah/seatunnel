@@ -22,6 +22,7 @@ import org.apache.seatunnel.api.table.catalog.PhysicalColumn;
 import org.apache.seatunnel.api.table.catalog.TableSchema;
 import org.apache.seatunnel.api.table.type.ArrayType;
 import org.apache.seatunnel.api.table.type.BasicType;
+import org.apache.seatunnel.api.table.type.PrimitiveByteArrayType;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.connectors.seatunnel.jdbc.internal.StatementBoundLobs;
@@ -29,7 +30,9 @@ import org.apache.seatunnel.connectors.seatunnel.jdbc.internal.converter.Abstrac
 
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
 import java.io.Reader;
+import java.sql.Blob;
 import java.sql.Clob;
 import java.sql.Connection;
 import java.sql.NClob;
@@ -146,10 +149,88 @@ public class OracleJdbcRowConverterTest {
         verify(nclob).free();
     }
 
+    @Test
+    public void testEmptyClobUsesEmptyLocator() throws SQLException {
+        Connection connection = mock(Connection.class);
+        Clob clob = mock(Clob.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(statement.getConnection()).thenReturn(connection);
+        when(connection.createClob()).thenReturn(clob);
+
+        writeLob(ORACLE_CLOB, "", statement);
+
+        verify(statement).setClob(1, clob);
+        verify(clob, never()).setString(anyLong(), any());
+        verify(statement, never()).setCharacterStream(anyInt(), any(Reader.class), anyInt());
+        verify(statement, never()).setCharacterStream(anyInt(), any(Reader.class), anyLong());
+
+        StatementBoundLobs.free(statement);
+        verify(clob).free();
+    }
+
+    @Test
+    public void testEmptyNclobUsesEmptyLocator() throws SQLException {
+        Connection connection = mock(Connection.class);
+        NClob nclob = mock(NClob.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(statement.getConnection()).thenReturn(connection);
+        when(connection.createNClob()).thenReturn(nclob);
+
+        writeLob(ORACLE_NCLOB, "", statement);
+
+        verify(statement).setNClob(1, nclob);
+        verify(nclob, never()).setString(anyLong(), any());
+        verify(statement, never()).setNCharacterStream(anyInt(), any(Reader.class), anyLong());
+
+        StatementBoundLobs.free(statement);
+        verify(nclob).free();
+    }
+
+    @Test
+    public void testEmptyBlobUsesEmptyLocator() throws SQLException {
+        Connection connection = mock(Connection.class);
+        Blob blob = mock(Blob.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(statement.getConnection()).thenReturn(connection);
+        when(connection.createBlob()).thenReturn(blob);
+
+        writeBytes(ORACLE_BLOB, new byte[0], statement);
+
+        verify(statement).setBlob(1, blob);
+        verify(statement, never()).setBinaryStream(anyInt(), any(InputStream.class), anyInt());
+        verify(statement, never()).setBinaryStream(anyInt(), any(InputStream.class), anyLong());
+
+        StatementBoundLobs.free(statement);
+        verify(blob).free();
+    }
+
+    @Test
+    public void testNonEmptyBlobKeepsBinaryStream() throws SQLException {
+        PreparedStatement statement = mock(PreparedStatement.class);
+
+        writeBytes(ORACLE_BLOB, new byte[] {0x01, 0x02}, statement);
+
+        verify(statement).setBinaryStream(eq(1), any(InputStream.class), eq(2));
+        verify(statement, never()).getConnection();
+        verify(statement, never()).setBlob(anyInt(), any(Blob.class));
+    }
+
     private void writeLob(String sourceType, String value, PreparedStatement statement)
             throws SQLException {
         TableSchema tableSchema = createTableSchema(BasicType.STRING_TYPE, null);
         TableSchema databaseTableSchema = createTableSchema(BasicType.STRING_TYPE, sourceType);
+        oracleJdbcRowConverter.toExternal(
+                tableSchema,
+                databaseTableSchema,
+                new SeaTunnelRow(new Object[] {value}),
+                statement);
+    }
+
+    private void writeBytes(String sourceType, byte[] value, PreparedStatement statement)
+            throws SQLException {
+        TableSchema tableSchema = createTableSchema(PrimitiveByteArrayType.INSTANCE, null);
+        TableSchema databaseTableSchema =
+                createTableSchema(PrimitiveByteArrayType.INSTANCE, sourceType);
         oracleJdbcRowConverter.toExternal(
                 tableSchema,
                 databaseTableSchema,

@@ -20,6 +20,7 @@ package org.apache.seatunnel.connectors.seatunnel.jdbc.internal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.Blob;
 import java.sql.Clob;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -37,6 +38,8 @@ public final class StatementBoundLobs {
     private static final Logger LOG = LoggerFactory.getLogger(StatementBoundLobs.class);
     private static final Map<PreparedStatement, List<Clob>> BOUND =
             new IdentityHashMap<PreparedStatement, List<Clob>>();
+    private static final Map<PreparedStatement, List<Blob>> BOUND_BLOBS =
+            new IdentityHashMap<PreparedStatement, List<Blob>>();
 
     private StatementBoundLobs() {}
 
@@ -51,20 +54,51 @@ public final class StatementBoundLobs {
         }
     }
 
+    public static void track(PreparedStatement statement, Blob blob) {
+        synchronized (BOUND_BLOBS) {
+            List<Blob> blobs = BOUND_BLOBS.get(statement);
+            if (blobs == null) {
+                blobs = new ArrayList<Blob>();
+                BOUND_BLOBS.put(statement, blobs);
+            }
+            blobs.add(blob);
+        }
+    }
+
     public static void free(PreparedStatement statement) {
         List<Clob> clobs;
         synchronized (BOUND) {
             clobs = BOUND.remove(statement);
         }
-        if (clobs == null) {
-            return;
-        }
-        for (Clob clob : clobs) {
-            try {
-                clob.free();
-            } catch (SQLException e) {
-                LOG.warn("Failed to free a temporary JDBC LOB", e);
+        if (clobs != null) {
+            for (Clob clob : clobs) {
+                freeLob(clob);
             }
+        }
+        List<Blob> blobs;
+        synchronized (BOUND_BLOBS) {
+            blobs = BOUND_BLOBS.remove(statement);
+        }
+        if (blobs != null) {
+            for (Blob blob : blobs) {
+                freeLob(blob);
+            }
+        }
+    }
+
+    private static void freeLob(Clob clob) {
+        try {
+            clob.free();
+        } catch (SQLException e) {
+            LOG.warn("Failed to free a temporary JDBC LOB", e);
+        }
+    }
+
+    private static void freeLob(Blob blob) {
+        try {
+            blob.free();
+        } catch (SQLException e) {
+            LOG.warn("Failed to free a temporary JDBC LOB", e);
         }
     }
 }
