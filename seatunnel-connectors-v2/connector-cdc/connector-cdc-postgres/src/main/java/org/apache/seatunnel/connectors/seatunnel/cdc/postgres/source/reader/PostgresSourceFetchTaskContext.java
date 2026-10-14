@@ -295,6 +295,51 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
     }
 
     /**
+     * Closes the current replication connection and opens a new one for WAL retry.
+     *
+     * <p>The replication slot already exists. Duplicate-slot SQLState {@code 42710} is tolerated
+     * the same way as {@link #configure(SourceSplitBase)}.
+     */
+    public void reopenReplicationConnection() {
+        if (replicationConnection != null) {
+            try {
+                replicationConnection.close();
+            } catch (Exception e) {
+                log.warn("Failed to close the previous replication connection before WAL retry", e);
+            }
+            replicationConnection = null;
+        }
+        if (snapshotter == null || !snapshotter.shouldStream()) {
+            throw new DebeziumException(
+                    "Cannot reopen a PostgreSQL replication connection because streaming is not enabled");
+        }
+        PostgresConnectorConfig connectorConfig = getDbzConnectorConfig();
+        this.replicationConnection =
+                PostgresObjectUtils.createReplicationConnection(
+                        this.taskContext,
+                        dataConnection,
+                        snapshotter.shouldSnapshot(),
+                        connectorConfig);
+        try {
+            replicationConnection.createReplicationSlot().orElse(null);
+        } catch (SQLException ex) {
+            String message = "Creation of replication slot failed";
+            if ("42710".equals(ex.getSQLState())) {
+                message +=
+                        "; when setting up multiple connectors for the same database host, please make sure to use a distinct replication slot name for each.";
+                log.warn(message);
+            } else {
+                throw new DebeziumException(message, ex);
+            }
+        }
+        try {
+            dataConnection.commit();
+        } catch (SQLException e) {
+            throw new DebeziumException(e);
+        }
+    }
+
+    /**
      * Reads the replication slot state and initializes the snapshotter with it. An invalidated slot
      * can never stream again, and reading its state would make Debezium retry for up to 30 minutes,
      * so its state is not read. Whether the job streams is only asked after {@code init}, because a

@@ -213,11 +213,13 @@ public class PostgresOffsetContext implements OffsetContext {
         return sourceInfo.lsn();
     }
 
-    Lsn lastCompletelyProcessedLsn() {
+    /** Returns the last LSN that was completely processed, used to resume WAL streaming. */
+    public Lsn lastCompletelyProcessedLsn() {
         return lastCompletelyProcessedLsn;
     }
 
-    Lsn lastCommitLsn() {
+    /** Returns the last committed LSN acknowledged with the replication slot. */
+    public Lsn lastCommitLsn() {
         return lastCommitLsn;
     }
 

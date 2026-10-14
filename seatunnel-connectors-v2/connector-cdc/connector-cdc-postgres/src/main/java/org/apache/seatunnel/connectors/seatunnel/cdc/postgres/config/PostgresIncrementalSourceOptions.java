@@ -59,4 +59,32 @@ public class PostgresIncrementalSourceOptions extends JdbcSourceOptions {
                                     + "but UPDATE/DELETE events may not contain the previous state. "
                                     + "This should only be used for append-only tables (e.g., outbox pattern). "
                                     + "Default is true for backward compatibility.");
+
+    public static final Option<String> SSL_MODE =
+            Options.key("sslmode")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "PostgreSQL libpq sslmode for the Debezium replication connection. "
+                                    + "Valid values: disable, allow, prefer, require, verify-ca, verify-full. "
+                                    + "If unset, sslmode is taken from the JDBC url query parameter when present; "
+                                    + "otherwise database.sslmode is left unset so Debezium/pgjdbc keep prefer.");
+
+    public static final Option<String> PUBLICATION_NAME =
+            Options.key("publication.name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The name of the PostgreSQL publication used for pgoutput logical replication. "
+                                    + "Maps to Debezium publication.name. If unset, the property is not written.");
+
+    public static final Option<String> PUBLICATION_AUTOCREATE_MODE =
+            Options.key("publication.autocreate.mode")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How Debezium should create the publication when it does not exist. "
+                                    + "Valid values: disabled, filtered, all_tables. Maps to Debezium "
+                                    + "publication.autocreate.mode. If unset, the property is not written "
+                                    + "and Debezium keeps all_tables.");
 }

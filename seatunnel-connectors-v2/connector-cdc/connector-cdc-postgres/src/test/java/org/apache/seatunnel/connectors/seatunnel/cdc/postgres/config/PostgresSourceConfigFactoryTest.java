@@ -17,14 +17,18 @@
 
 package org.apache.seatunnel.connectors.seatunnel.cdc.postgres.config;
 
+import org.apache.seatunnel.api.configuration.ReadonlyConfig;
 import org.apache.seatunnel.connectors.cdc.base.config.StartupConfig;
 import org.apache.seatunnel.connectors.cdc.base.config.StopConfig;
+import org.apache.seatunnel.connectors.cdc.base.option.JdbcSourceOptions;
 import org.apache.seatunnel.connectors.cdc.base.option.StartupMode;
 import org.apache.seatunnel.connectors.cdc.base.option.StopMode;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 
 /** Tests the PG-base-backed PostgreSQL source config factory behavior that must stay compatible. */
@@ -157,6 +161,100 @@ public class PostgresSourceConfigFactoryTest {
         Assertions.assertEquals(
                 "true",
                 factory.create(0).getDbzConfiguration().getString("include.schema.changes"));
+    }
+
+    @Test
+    public void shouldCopySslModeFromJdbcUrl() {
+        PostgresSourceConfigFactory factory = baseFactory();
+        factory.originUrl("jdbc:postgresql://127.0.0.1:5432/test?sslmode=disable");
+
+        Assertions.assertEquals(
+                "disable", factory.create(0).getDbzConfiguration().getString("database.sslmode"));
+    }
+
+    @Test
+    public void shouldLetSslModeOptionWinOverJdbcUrl() {
+        PostgresSourceConfigFactory factory =
+                factoryFromReadonlyConfig(
+                        option(PostgresIncrementalSourceOptions.SSL_MODE.key(), "require"));
+        factory.originUrl("jdbc:postgresql://127.0.0.1:5432/test?sslmode=disable");
+
+        Assertions.assertEquals(
+                "require", factory.create(0).getDbzConfiguration().getString("database.sslmode"));
+    }
+
+    @Test
+    public void shouldLeaveDatabaseSslModeUnsetWhenNeitherOptionNorUrlSetIt() {
+        PostgresSourceConfigFactory factory = baseFactory();
+
+        Assertions.assertNull(
+                factory.create(0).getDbzConfiguration().getString("database.sslmode"));
+    }
+
+    @Test
+    public void shouldWritePublicationOptionsWhenSet() {
+        Map<String, Object> options = new HashMap<>();
+        options.put(PostgresIncrementalSourceOptions.PUBLICATION_NAME.key(), "seatunnel_pub");
+        options.put(PostgresIncrementalSourceOptions.PUBLICATION_AUTOCREATE_MODE.key(), "disabled");
+        PostgresSourceConfigFactory factory = factoryFromReadonlyConfig(options);
+
+        Assertions.assertEquals(
+                "seatunnel_pub",
+                factory.create(0).getDbzConfiguration().getString("publication.name"));
+        Assertions.assertEquals(
+                "disabled",
+                factory.create(0).getDbzConfiguration().getString("publication.autocreate.mode"));
+    }
+
+    @Test
+    public void shouldOmitPublicationKeysWhenUnset() {
+        PostgresSourceConfigFactory factory = baseFactory();
+
+        Assertions.assertNull(
+                factory.create(0).getDbzConfiguration().getString("publication.name"));
+        Assertions.assertNull(
+                factory.create(0).getDbzConfiguration().getString("publication.autocreate.mode"));
+    }
+
+    @Test
+    public void shouldKeepPublicationOptionsAuthoritativeOverUserDebeziumProperties() {
+        Map<String, Object> options = new HashMap<>();
+        options.put(PostgresIncrementalSourceOptions.PUBLICATION_NAME.key(), "seatunnel_pub");
+        options.put(PostgresIncrementalSourceOptions.PUBLICATION_AUTOCREATE_MODE.key(), "filtered");
+        PostgresSourceConfigFactory factory = factoryFromReadonlyConfig(options);
+        Properties dbzProperties = new Properties();
+        dbzProperties.setProperty("publication.name", "dbz_pub");
+        dbzProperties.setProperty("publication.autocreate.mode", "all_tables");
+        factory.debeziumProperties(dbzProperties);
+
+        Assertions.assertEquals(
+                "seatunnel_pub",
+                factory.create(0).getDbzConfiguration().getString("publication.name"));
+        Assertions.assertEquals(
+                "filtered",
+                factory.create(0).getDbzConfiguration().getString("publication.autocreate.mode"));
+    }
+
+    private PostgresSourceConfigFactory factoryFromReadonlyConfig(Map<String, Object> extra) {
+        Map<String, Object> options = new HashMap<>();
+        options.put(JdbcSourceOptions.USERNAME.key(), "user");
+        options.put(JdbcSourceOptions.PASSWORD.key(), "pwd");
+        options.putAll(extra);
+        PostgresSourceConfigFactory factory = new PostgresSourceConfigFactory();
+        factory.fromReadonlyConfig(ReadonlyConfig.fromMap(options));
+        factory.hostname("127.0.0.1");
+        factory.port(5432);
+        factory.originUrl("jdbc:postgresql://127.0.0.1:5432/test");
+        factory.databaseList("inventory");
+        factory.startupOptions(new StartupConfig(StartupMode.INITIAL, null, null, null));
+        factory.stopOptions(new StopConfig(StopMode.NEVER, null, null, null));
+        return factory;
+    }
+
+    private static Map<String, Object> option(String key, String value) {
+        Map<String, Object> options = new HashMap<>();
+        options.put(key, value);
+        return options;
     }
 
     private PostgresSourceConfigFactory baseFactory() {

@@ -22,6 +22,8 @@ import ChangeLog from '../changelog/connector-cdc-postgres.md';
 
 PostgreSQL CDC 连接器允许从 PostgreSQL 数据库读取快照数据和增量数据。本文档介绍如何配置 PostgreSQL CDC 连接器。
 
+在云 RDS 上，优先使用内网或 VPC 地址，并配合 `sslmode=disable`；同时将 `publication.autocreate.mode` 设为 `disabled`，并预先创建 `FOR TABLE` publication。
+
 部分 PostgreSQL 兼容数据库（例如 HighGo）在 `information_schema.tables` 中会对同一张物理表返回多行重复记录。
 连接器在表发现阶段会按完整的 `catalog.schema.table` 标识去重，这些重复行会被忽略，任务可正常启动。
 
@@ -103,10 +105,13 @@ ALTER TABLE your_table_name REPLICA IDENTITY FULL;
 | snapshot.split.size                       | Integer  | 否   | 8096     | 表快照的拆分大小（行数），捕获的表在读取表快照时被拆分成多个拆分。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | snapshot.fetch.size                       | Integer  | 否   | 1024     | 读取表快照时每次轮询的最大获取大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | slot.name                                 | String   | 否   | seatunnel | PostgreSQL 逻辑解码槽名称。同一个 PostgreSQL 实例上如果有多个 CDC 任务，请为每个任务配置不同的 `slot.name`。                                                                                                                                                                                                                                                                                                                                                      |
+| sslmode                                   | String   | 否   | -        | Debezium 复制连接使用的 PostgreSQL libpq `sslmode`。有效值：`disable`、`allow`、`prefer`、`require`、`verify-ca`、`verify-full`。未设置时，若 JDBC `url` 查询参数中包含 `sslmode` 则使用该值；否则不写入 `database.sslmode`，由 Debezium/pgjdbc 保持 `prefer`。                                                                                                                                                                                                                                                              |
+| publication.name                          | String   | 否   | -        | 用于 `pgoutput` 逻辑复制的 PostgreSQL publication 名称，对应 Debezium `publication.name`。未设置时不写入该属性。                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| publication.autocreate.mode               | String   | 否   | -        | publication 不存在时 Debezium 的创建方式。有效值：`disabled`、`filtered`、`all_tables`，对应 Debezium `publication.autocreate.mode`。未设置时不写入该属性，Debezium 保持 `all_tables`。                                                                                                                                                                                                                                                                                                                                                      |
 | decoding.plugin.name                      | String   | 否   | pgoutput | 安装在服务器上的 Postgres 逻辑解码插件的名称，支持的值有 decoderbufs、wal2json、wal2json_rds、wal2json_streaming、wal2json_rds_streaming 和 pgoutput。                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | server-time-zone                          | String   | 否   | UTC      | 数据库服务器中的会话时区。如果未设置，则使用 ZoneId.systemDefault() 来确定服务器时区。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | connect.timeout.ms                        | Duration | 否   | 30000    | 连接器在尝试连接到数据库服务器后应等待的最大时间，以防超时。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| connect.max-retries                       | Integer  | 否   | 3        | 连接器应重试建立数据库服务器连接的最大重试次数。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| connect.max-retries                       | Integer  | 否   | 3        | 连接器应重试建立数据库服务器连接的最大重试次数。同一预算也用于在可重试的断开后重试 WAL COPY 流。                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | connection.pool.size                      | Integer  | 否   | 20       | JDBC 连接池大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | chunk-key.even-distribution.factor.upper-bound | Double   | 否   | 100      | 块键分布因子的上限。此因子用于确定表数据是否均匀分布。如果计算出的分布因子小于或等于此上限（即 (MAX(id) - MIN(id) + 1) / 行数），则将优化表块以实现均匀分布。否则，如果分布因子更大，则将认为该表分布不均匀，并且如果估计的分片数量超过 `sample-sharding.threshold` 指定的值，则将使用基于采样的分片策略。默认值为 100.0。 |
 | chunk-key.even-distribution.factor.lower-bound | Double   | 否   | 0.05     | 块键分布因子的下限。此因子用于确定表数据是否均匀分布。如果计算出的分布因子大于或等于此下限（即 (MAX(id) - MIN(id) + 1) / 行数），则将优化表块以实现均匀分布。否则，如果分布因子更小，则将认为该表分布不均匀，并且如果估计的分片数量超过 `sample-sharding.threshold` 指定的值，则将使用基于采样的分片策略。默认值为 0.05。  |
@@ -217,6 +222,26 @@ source {
         primaryKeys = ["id"]
       }
     ]
+  }
+}
+```
+
+### 配置 sslmode 与 publication
+
+请使用一等选项，而不是只把这些键放在 `debezium{}` 中。在云 RDS 上，优先使用内网地址并设置 `sslmode=disable`，同时预先创建 `FOR TABLE` publication。
+
+```hocon
+source {
+  Postgres-CDC {
+    username = "postgres"
+    password = "postgres"
+    database-names = ["postgres_cdc"]
+    table-names = ["postgres_cdc.inventory.postgres_cdc_table_1"]
+    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
+    slot.name = "seatunnel_postgres_cdc"
+    sslmode = "disable"
+    publication.name = "seatunnel_pub"
+    publication.autocreate.mode = "disabled"
   }
 }
 ```

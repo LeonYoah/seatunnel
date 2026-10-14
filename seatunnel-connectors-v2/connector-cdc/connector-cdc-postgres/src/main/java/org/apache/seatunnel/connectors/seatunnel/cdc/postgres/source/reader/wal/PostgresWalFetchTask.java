@@ -45,12 +45,55 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
         this.split = split;
     }
 
+    /**
+     * Streams WAL changes for the incremental split, retrying retriable COPY disconnects.
+     *
+     * <p>A new replication connection is opened after each retriable failure. The same {@link
+     * PostgresOffsetContext} is reused so streaming resumes from {@code
+     * lastCompletelyProcessedLsn}/{@code lastCommitLsn} instead of the split's original LSN. {@code
+     * ErrorHandler.setProducerThrowable} is invoked only after retries are exhausted so {@code
+     * ChangeEventQueue} is not poisoned while a retry is still in progress.
+     */
     @Override
     public void execute(FetchTask.Context context) throws Exception {
         PostgresSourceFetchTaskContext sourceFetchContext =
                 (PostgresSourceFetchTaskContext) context;
         taskRunning = true;
+        offsetContext = sourceFetchContext.getOffsetContext();
 
+        int maxRetries = sourceFetchContext.getSourceConfig().getConnectMaxRetries();
+        long retryDelayMs = sourceFetchContext.getDbzConnectorConfig().retryDelay().toMillis();
+
+        try {
+            PostgresWalStreamRetryPolicy.executeWithRetry(
+                    () -> streamOnce(sourceFetchContext),
+                    maxRetries,
+                    retryDelayMs,
+                    () -> taskRunning,
+                    (attempt, max, failure) -> {
+                        log.warn(
+                                "Postgres WAL COPY stream failed with a retriable error, retrying attempt {}/{}; last LSN: {}",
+                                attempt,
+                                max,
+                                formatLastLsn(),
+                                failure);
+                        sourceFetchContext.reopenReplicationConnection();
+                    });
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (Exception e) {
+            sourceFetchContext.getErrorHandler().setProducerThrowable(e);
+            throw new RuntimeException(
+                    "Postgres WAL streaming failed for split "
+                            + split.splitId()
+                            + ", last committed LSN: "
+                            + formatLastLsn(),
+                    e);
+        }
+    }
+
+    private void streamOnce(PostgresSourceFetchTaskContext sourceFetchContext) throws Exception {
         streamingChangeEventSource =
                 new PostgresStreamingChangeEventSource(
                         sourceFetchContext.getDbzConnectorConfig(),
@@ -62,8 +105,6 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
                         sourceFetchContext.getDatabaseSchema(),
                         sourceFetchContext.getTaskContext(),
                         sourceFetchContext.getReplicationConnection());
-
-        offsetContext = sourceFetchContext.getOffsetContext();
 
         TransactionLogSplitChangeEventSourceContext changeEventSourceContext =
                 new TransactionLogSplitChangeEventSourceContext();
@@ -80,7 +121,7 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
                     "Postgres WAL streaming failed for split "
                             + split.splitId()
                             + ", last committed LSN: "
-                            + (lastCommitLsn != null ? Lsn.valueOf(lastCommitLsn) : "none"),
+                            + formatLastLsn(),
                     producerThrowable);
         }
     }
@@ -116,6 +157,16 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
     @Override
     public SourceSplitBase getSplit() {
         return split;
+    }
+
+    private String formatLastLsn() {
+        if (offsetContext != null && offsetContext.lastCompletelyProcessedLsn() != null) {
+            return offsetContext.lastCompletelyProcessedLsn().toString();
+        }
+        if (lastCommitLsn != null) {
+            return Lsn.valueOf(lastCommitLsn).toString();
+        }
+        return "none";
     }
 
     private class TransactionLogSplitChangeEventSourceContext

@@ -75,7 +75,11 @@ public class PostgresStreamingChangeEventSource
 
     private final PostgresConnection connection;
     private final PostgresEventDispatcher<TableId> dispatcher;
+    // Retained to keep the Debezium constructor signature. Producer failures are rethrown
+    // so PostgresWalFetchTask can retry without poisoning ChangeEventQueue.
+    @SuppressWarnings("unused")
     private final ErrorHandler errorHandler;
+
     private final Clock clock;
     private final PostgresSchema schema;
     private final PostgresConnectorConfig connectorConfig;
@@ -228,8 +232,16 @@ public class PostgresStreamingChangeEventSource
                                 KEEP_ALIVE_THREAD_NAME));
             }
             processMessages(context, partition, offsetContext, stream);
-        } catch (Throwable e) {
-            errorHandler.setProducerThrowable(e);
+        } catch (InterruptedException e) {
+            throw e;
+        } catch (Exception e) {
+            // Do not call errorHandler.setProducerThrowable(e). That also records
+            // queue.producerException(RetriableException), so IncrementalSourceStreamFetcher
+            // queue.poll() would fail the job even when PostgresWalFetchTask retries.
+            if (e instanceof RuntimeException) {
+                throw (RuntimeException) e;
+            }
+            throw new RuntimeException(e);
         } finally {
             if (replicationConnection != null) {
                 LOGGER.debug("stopping streaming...");
