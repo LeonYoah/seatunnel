@@ -23,6 +23,7 @@ import org.apache.seatunnel.connectors.cdc.base.source.split.SourceSplitBase;
 import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.offset.LsnOffset;
 import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.PostgresSourceFetchTaskContext;
 
+import io.debezium.connector.postgresql.PostgresConnectorConfig;
 import io.debezium.connector.postgresql.PostgresOffsetContext;
 import io.debezium.connector.postgresql.PostgresStreamingChangeEventSource;
 import io.debezium.connector.postgresql.connection.Lsn;
@@ -32,6 +33,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
@@ -45,12 +47,70 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
         this.split = split;
     }
 
+    /**
+     * Streams WAL changes for the incremental split, retrying retriable COPY and JDBC disconnects.
+     *
+     * <p>After each retriable failure the captured JDBC {@code dataConnection} is reconnected in
+     * place, then a new replication connection is opened. The same {@link PostgresOffsetContext} is
+     * reused so streaming resumes from {@code lastCompletelyProcessedLsn}/{@code lastCommitLsn}
+     * instead of the split's original LSN. {@code ErrorHandler.setProducerThrowable} is invoked
+     * only after retries are exhausted so {@code ChangeEventQueue} is not poisoned while a retry is
+     * still in progress. Recycled-WAL errors are not retried and are wrapped with operator
+     * guidance.
+     */
     @Override
     public void execute(FetchTask.Context context) throws Exception {
         PostgresSourceFetchTaskContext sourceFetchContext =
                 (PostgresSourceFetchTaskContext) context;
         taskRunning = true;
+        offsetContext = sourceFetchContext.getOffsetContext();
 
+        int maxRetries = sourceFetchContext.getSourceConfig().getConnectMaxRetries();
+        long retryDelayMs = sourceFetchContext.getDbzConnectorConfig().retryDelay().toMillis();
+        AtomicInteger attempts = new AtomicInteger();
+
+        try {
+            PostgresWalStreamRetryPolicy.executeWithRetry(
+                    () -> {
+                        attempts.incrementAndGet();
+                        streamOnce(sourceFetchContext);
+                    },
+                    maxRetries,
+                    retryDelayMs,
+                    () -> taskRunning,
+                    (attempt, max, failure) -> {
+                        log.warn(
+                                "Postgres WAL COPY stream failed with a retriable error, retrying attempt {}/{}; last LSN: {}",
+                                attempt,
+                                max,
+                                formatLastLsn(),
+                                failure);
+                        PostgresWalStreamRetryPolicy.reopenConnectionsOrContinue(
+                                sourceFetchContext::reopenJdbcDataConnection,
+                                sourceFetchContext::reopenReplicationConnection);
+                    });
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (Exception e) {
+            Exception failure =
+                    PostgresWalStartLsnUnavailable.wrapIfNeeded(
+                            e, requestedLsnString(), slotName(sourceFetchContext));
+            sourceFetchContext.getErrorHandler().setProducerThrowable(failure);
+            throw new RuntimeException(
+                    "Postgres WAL streaming failed for split "
+                            + split.splitId()
+                            + ", last LSN: "
+                            + formatLastLsn()
+                            + ", attempts: "
+                            + Math.max(attempts.get(), 1)
+                            + ", max retries: "
+                            + maxRetries,
+                    failure);
+        }
+    }
+
+    private void streamOnce(PostgresSourceFetchTaskContext sourceFetchContext) throws Exception {
         streamingChangeEventSource =
                 new PostgresStreamingChangeEventSource(
                         sourceFetchContext.getDbzConnectorConfig(),
@@ -62,8 +122,6 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
                         sourceFetchContext.getDatabaseSchema(),
                         sourceFetchContext.getTaskContext(),
                         sourceFetchContext.getReplicationConnection());
-
-        offsetContext = sourceFetchContext.getOffsetContext();
 
         TransactionLogSplitChangeEventSourceContext changeEventSourceContext =
                 new TransactionLogSplitChangeEventSourceContext();
@@ -80,7 +138,7 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
                     "Postgres WAL streaming failed for split "
                             + split.splitId()
                             + ", last committed LSN: "
-                            + (lastCommitLsn != null ? Lsn.valueOf(lastCommitLsn) : "none"),
+                            + formatLastLsn(),
                     producerThrowable);
         }
     }
@@ -116,6 +174,46 @@ public class PostgresWalFetchTask implements FetchTask<SourceSplitBase> {
     @Override
     public SourceSplitBase getSplit() {
         return split;
+    }
+
+    private String formatLastLsn() {
+        Lsn lsn = requestedStartLsn();
+        if (lsn != null) {
+            return PostgresWalStartLsnUnavailable.formatLsn(lsn);
+        }
+        if (lastCommitLsn != null) {
+            return Lsn.valueOf(lastCommitLsn).asString();
+        }
+        return "none";
+    }
+
+    private String requestedLsnString() {
+        Lsn lsn = requestedStartLsn();
+        if (lsn != null) {
+            return PostgresWalStartLsnUnavailable.formatLsn(lsn);
+        }
+        if (split.getStartupOffset() instanceof LsnOffset) {
+            return PostgresWalStartLsnUnavailable.formatLsn(
+                    ((LsnOffset) split.getStartupOffset()).getLsn());
+        }
+        return "0/0";
+    }
+
+    private Lsn requestedStartLsn() {
+        if (offsetContext != null && offsetContext.lastCompletelyProcessedLsn() != null) {
+            return offsetContext.lastCompletelyProcessedLsn();
+        }
+        if (split.getStartupOffset() instanceof LsnOffset) {
+            return ((LsnOffset) split.getStartupOffset()).getLsn();
+        }
+        return null;
+    }
+
+    private static String slotName(PostgresSourceFetchTaskContext sourceFetchContext) {
+        return sourceFetchContext
+                .getDbzConnectorConfig()
+                .getConfig()
+                .getString(PostgresConnectorConfig.SLOT_NAME);
     }
 
     private class TransactionLogSplitChangeEventSourceContext

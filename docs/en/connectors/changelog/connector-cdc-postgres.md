@@ -2,6 +2,9 @@
 
 | Change | Commit | Version |
 | --- | --- | --- |
+|[Improve][Connector-V2] Default Postgres CDC heartbeat.interval.ms to 30s like Flink CDC|-|Next|
+|[Fix][Connector-V2] Reconnect Postgres CDC JDBC on probe failure and explain earliest WAL recycle|-|Next|
+|[Fix][Connector-V2] Retry Postgres CDC WAL stream and expose sslmode/publication options|-|Next|
 |[Feature][Core] Add plugin directory support for each connector (#9650)|https://github.com/apache/seatunnel/commit/4beb2b9336|2.3.12|
 |[improve] jdbc options (#9541)|https://github.com/apache/seatunnel/commit/d041e5fb32|2.3.12|
 |[Feature][Connectors-v2] Optimize the size of CDC JAR Files (#9546)|https://github.com/apache/seatunnel/commit/1dd19c6823|2.3.12|

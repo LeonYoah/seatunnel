@@ -23,6 +23,9 @@ import ChangeLog from '../changelog/connector-cdc-postgres.md';
 The PostgreSQL CDC connector allows for reading snapshot data and incremental data from PostgreSQL databases. This document
 describes how to set up the PostgreSQL CDC connector.
 
+On cloud RDS, prefer an intranet or VPC endpoint together with `sslmode=disable`, and set
+`publication.autocreate.mode=disabled` with a pre-created `FOR TABLE` publication.
+
 Some PostgreSQL-compatible databases (for example HighGo) return the same physical table more than
 once from `information_schema.tables`. The connector deduplicates discovered tables by their fully
 qualified `catalog.schema.table` id, so these repeated rows are ignored and the job starts normally.
@@ -101,15 +104,19 @@ ALTER TABLE your_table_name REPLICA IDENTITY FULL;
 | table-names                               | List     | Yes, if `table-pattern` is not used | -        | Tables to monitor. Use the fully qualified `database.schema.table` format, for example: `postgres_cdc.inventory.orders`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | table-pattern                             | String   | Yes, if `table-names` is not used | -        | Regular expression for tables to monitor. Use the fully qualified table name in the pattern, for example: `postgres_cdc\\.inventory\\..*`. `table-names` and `table-pattern` are mutually exclusive.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | table-names-config                        | List     | No       | -       | Per-table config list. Example: `[{"table": "db1.schema1.table1","primaryKeys": ["key1"],"snapshotSplitColumn": "key2"}]`. Use `primaryKeys` for tables without a physical primary key. `snapshotSplitColumn` must be a unique key; otherwise SeaTunnel ignores it and selects a split column internally.                                                                                                                                                                                                                                                                                                                                                                          |
-| startup.mode                              | Enum     | No       | INITIAL  | Optional startup mode for PostgreSQL CDC consumer, valid enumerations are `initial`, `snapshot-only`, `committed-offset`, `earliest` and `latest`. <br/> `initial`: Synchronize historical data at startup, and then synchronize incremental data.<br/> `snapshot-only`: Synchronize historical data at startup and finish as a bounded job without entering WAL streaming.<br/> `committed-offset`: Skip snapshot data and start WAL streaming from the configured replication slot's committed LSN. This mode requires an explicit `slot.name` and fails if the slot does not exist or has no usable committed LSN.<br/> `earliest`: Startup from the earliest offset possible.<br/> `latest`: Startup from the latest offset. |
+| startup.mode                              | Enum     | No       | INITIAL  | Optional startup mode for PostgreSQL CDC consumer, valid enumerations are `initial`, `snapshot-only`, `committed-offset`, `earliest` and `latest`. <br/> `initial`: Synchronize historical data at startup, and then synchronize incremental data.<br/> `snapshot-only`: Synchronize historical data at startup and finish as a bounded job without entering WAL streaming.<br/> `committed-offset`: Skip snapshot data and start WAL streaming from the configured replication slot's committed LSN. This mode requires an explicit `slot.name` and fails if the slot does not exist or has no usable committed LSN.<br/> `earliest`: Request LSN `0/0`. This is **not** Kafka `earliest` and **not** MySQL `earliestBinlogOffset`. PostgreSQL logical decoding cannot start from a recycled LSN or from a position before the slot `restart_lsn`. If that WAL is gone the job fails (`POSTGRES-05`); use `startup.mode=committed-offset` with an existing slot, or `latest` / `initial`. SeaTunnel does not clamp to `restart_lsn`.<br/> `latest`: Startup from the latest offset. |
 | stop.mode                                 | Enum     | No       | NEVER    | Optional stop mode for PostgreSQL CDC consumer. The only valid enumeration is `never`: the source keeps streaming WAL changes and never stops on its own once it reaches the incremental phase.                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | snapshot.split.size                       | Integer  | No       | 8096     | The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | snapshot.fetch.size                       | Integer  | No       | 1024     | The maximum fetch size for per poll when read table snapshot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | slot.name                                 | String   | No       | seatunnel | The PostgreSQL logical decoding slot name. Use a different slot name for each CDC job that reads from the same PostgreSQL instance.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| heartbeat.interval.ms                     | Long     | No       | 30000    | Interval in milliseconds for sending heartbeat events so the replication slot offset keeps advancing when captured tables are idle or events are filtered. Set to `0` to disable. Default is `30000` (30 seconds), matching Flink CDC. A legacy `debezium.heartbeat.interval.ms` still works when this option is unset; the top-level option wins when both are set. For a completely idle database also set `debezium.heartbeat.action.query`. |
+| sslmode                                   | String   | No       | -        | PostgreSQL libpq `sslmode` for the Debezium replication connection. Valid values: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`. If unset, `sslmode` is taken from the JDBC `url` query parameter when present; otherwise `database.sslmode` is left unset so Debezium/pgjdbc keep `prefer`.                                                                                                                                                                                                                                                                                              |
+| publication.name                          | String   | No       | -        | Name of the PostgreSQL publication used for `pgoutput` logical replication. Maps to Debezium `publication.name`. If unset, the property is not written.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| publication.autocreate.mode               | String   | No       | -        | How Debezium should create the publication when it does not exist. Valid values: `disabled`, `filtered`, `all_tables`. Maps to Debezium `publication.autocreate.mode`. If unset, the property is not written and Debezium keeps `all_tables`.                                                                                                                                                                                                                                                                                                                                                                   |
 | decoding.plugin.name                      | String   | No       | pgoutput | The name of the Postgres logical decoding plug-in installed on the server,Supported values are decoderbufs, wal2json, wal2json_rds, wal2json_streaming,wal2json_rds_streaming and pgoutput.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | server-time-zone                          | String   | No       | UTC      | The session time zone in database server. If not set, then ZoneId.systemDefault() is used to determine the server time zone.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | connect.timeout.ms                        | Duration | No       | 30000    | The maximum time that the connector should wait after trying to connect to the database server before timing out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| connect.max-retries                       | Integer  | No       | 3        | The max retry times that the connector should retry to build database server connection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| connect.max-retries                       | Integer  | No       | 3        | The max retry times that the connector should retry to build a database server connection. The same finite budget also bounds WAL COPY reconnects and JDBC probe reconnects after a retriable disconnect. When the budget is exhausted the job fails with the last LSN and the attempt/max-retry counts. Default remains `3`.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | connection.pool.size                      | Integer  | No       | 20       | The jdbc connection pool size.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | chunk-key.even-distribution.factor.upper-bound | Double   | No       | 100      | The upper bound of the chunk key distribution factor. This factor is used to determine whether the table data is evenly distributed. If the distribution factor is calculated to be less than or equal to this upper bound (i.e., (MAX(id) - MIN(id) + 1) / row count), the table chunks would be optimized for even distribution. Otherwise, if the distribution factor is greater, the table will be considered as unevenly distributed and the sampling-based sharding strategy will be used if the estimated shard count exceeds the value specified by `sample-sharding.threshold`. The default value is 100.0. |
 | chunk-key.even-distribution.factor.lower-bound | Double   | No       | 0.05     | The lower bound of the chunk key distribution factor. This factor is used to determine whether the table data is evenly distributed. If the distribution factor is calculated to be greater than or equal to this lower bound (i.e., (MAX(id) - MIN(id) + 1) / row count), the table chunks would be optimized for even distribution. Otherwise, if the distribution factor is less, the table will be considered as unevenly distributed and the sampling-based sharding strategy will be used if the estimated shard count exceeds the value specified by `sample-sharding.threshold`. The default value is 0.05.  |
@@ -226,9 +233,31 @@ source {
 }
 ```
 
+### Configure sslmode and publication
+
+Use the first-class options instead of putting these keys only inside `debezium{}`. On cloud RDS, prefer an intranet endpoint with `sslmode=disable` and a pre-created `FOR TABLE` publication.
+
+```hocon
+source {
+  Postgres-CDC {
+    username = "postgres"
+    password = "postgres"
+    database-names = ["postgres_cdc"]
+    table-names = ["postgres_cdc.inventory.postgres_cdc_table_1"]
+    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
+    slot.name = "seatunnel_postgres_cdc"
+    sslmode = "disable"
+    publication.name = "seatunnel_pub"
+    publication.autocreate.mode = "disabled"
+  }
+}
+```
+
 ### Configure Debezium heartbeat
 
-For low-traffic tables, the Postgres logical decoding slot position only advances when row changes are written to the WAL. A Debezium heartbeat keeps the slot advancing so checkpoint offsets are recorded regularly and replication lag stays observable. The heartbeat table must exist on the Postgres server before the job starts.
+For low-traffic tables, the Postgres logical decoding slot position only advances when row changes are written to the WAL. Use the first-class `heartbeat.interval.ms` option (default `30000`, matching Flink CDC) so the slot offset keeps advancing when captured events are filtered. Set it to `0` to disable. A legacy `debezium.heartbeat.interval.ms` still works when the top-level option is unset.
+
+For a completely idle database, also set `debezium.heartbeat.action.query` to write a row the slot can decode. The heartbeat table must exist on the Postgres server before the job starts.
 
 ```hocon
 source {
@@ -241,8 +270,8 @@ source {
     url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
     decoding.plugin.name = "decoderbufs"
     slot.name = "seatunnel_postgres_cdc"
+    heartbeat.interval.ms = 30000
     debezium {
-      heartbeat.interval.ms = 100
       heartbeat.action.query = "INSERT INTO inventory.heartbeat (ts) VALUES (NOW())"
     }
   }
@@ -385,6 +414,28 @@ When `startup.mode` is `committed-offset`, the replication slot must already exi
 uses its `confirmed_flush_lsn` as the startup offset.
 Unused replication slots hold WAL segments on disk, which can cause unbounded WAL growth. When a
 CDC job is permanently decommissioned, drop the unused replication slot manually on PostgreSQL.
+
+### Why does `startup.mode=earliest` fail with WAL LSN unavailable?
+
+`startup.mode=earliest` requests LSN `0/0`. That is not Kafka `earliest` and not MySQL `earliestBinlogOffset`. PostgreSQL logical decoding cannot start from a recycled LSN or from a position before the slot `restart_lsn`. SeaTunnel does not clamp to `restart_lsn`. If the requested WAL is gone the job fails with `POSTGRES-05` and tells you to use `startup.mode=committed-offset` with an existing slot, or `latest` / `initial`.
+
+### Why does the job fail with "replication slot ... has been invalidated"?
+
+PostgreSQL 13 and later can invalidate a replication slot, for example when it falls behind
+`max_slot_wal_keep_size`, stays inactive longer than `idle_replication_slot_timeout` (PostgreSQL 18),
+or, on a standby, conflicts with recovery. `pg_replication_slots` then shows `wal_status = 'lost'`,
+`conflicting = true` (PostgreSQL 16 and later) or `invalidation_reason` (PostgreSQL 17 and later).
+The changes after the slot's confirmed position are gone, so SeaTunnel fails a job that reads changes from the slot
+with error `POSTGRES-04`; `snapshot-only` jobs do not use the slot and are not affected.
+Drop the slot with `SELECT pg_drop_replication_slot('<slot.name>')` and start the job
+again without restoring from a checkpoint or savepoint; use `startup.mode = initial` to take a new snapshot.
+
+### How are transaction boundaries handled during savepoint recovery?
+
+Recovery distinguishes a saved transaction commit from a processed row, because a commit and the
+next transaction's first row can share the same LSN. Rows committed while the job is stopped remain
+eligible for replay. Existing savepoints without the saved operation type remain readable; recovery
+may replay a row at an ambiguous boundary to avoid losing it.
 
 ### Why does PostgreSQL CDC fall behind?
 

@@ -17,27 +17,46 @@
 
 package org.apache.seatunnel.connectors.seatunnel.cdc.postgres.config;
 
+import org.apache.seatunnel.shade.org.apache.commons.lang3.StringUtils;
+
 import org.apache.seatunnel.api.configuration.ReadonlyConfig;
-import org.apache.seatunnel.connectors.cdc.base.config.JdbcSourceConfigFactory;
-import org.apache.seatunnel.connectors.cdc.base.option.StartupMode;
-import org.apache.seatunnel.connectors.cdc.debezium.EmbeddedDatabaseHistory;
+import org.apache.seatunnel.connectors.seatunnel.cdc.pgbase.config.PgBaseSourceConfigFactory;
 
 import io.debezium.connector.postgresql.PostgresConnector;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
-import java.util.UUID;
-import java.util.stream.Collectors;
+import java.util.Set;
 
-import static org.apache.seatunnel.shade.com.google.common.base.Preconditions.checkNotNull;
-
-public class PostgresSourceConfigFactory extends JdbcSourceConfigFactory {
+/**
+ * PostgreSQL-specific source config factory built on top of the PG-base Debezium property assembly.
+ */
+public class PostgresSourceConfigFactory extends PgBaseSourceConfigFactory<PostgresSourceConfig> {
 
     private static final long serialVersionUID = 1L;
 
     private static final String DATABASE_SERVER_NAME = "postgres_cdc_source";
 
     private static final String DRIVER_CLASS_NAME = "org.postgresql.Driver";
+
+    private static final Set<String> SSL_MODES =
+            Collections.unmodifiableSet(
+                    new HashSet<>(
+                            Arrays.asList(
+                                    "disable",
+                                    "allow",
+                                    "prefer",
+                                    "require",
+                                    "verify-ca",
+                                    "verify-full")));
+
+    private static final Set<String> PUBLICATION_AUTOCREATE_MODES =
+            Collections.unmodifiableSet(
+                    new HashSet<>(Arrays.asList("disabled", "filtered", "all_tables")));
 
     private String decodingPluginName =
             PostgresIncrementalSourceOptions.DECODING_PLUGIN_NAME.defaultValue();
@@ -46,113 +65,202 @@ public class PostgresSourceConfigFactory extends JdbcSourceConfigFactory {
 
     private List<String> schemaList;
 
+    private String sslmode;
+
+    private String publicationName;
+
+    private String publicationAutocreateMode;
+
+    /**
+     * Explicit top-level {@code heartbeat.interval.ms}. {@code null} means the user did not set it,
+     * so a legacy {@code debezium.heartbeat.interval.ms} may still override the 30s default.
+     */
+    private Long heartbeatIntervalMs;
+
     @Override
-    public JdbcSourceConfigFactory fromReadonlyConfig(ReadonlyConfig config) {
+    public PostgresSourceConfigFactory fromReadonlyConfig(ReadonlyConfig config) {
         super.fromReadonlyConfig(config);
         this.decodingPluginName = config.get(PostgresIncrementalSourceOptions.DECODING_PLUGIN_NAME);
         this.slotName = config.get(PostgresIncrementalSourceOptions.SLOT_NAME);
         this.schemaList = config.get(PostgresIncrementalSourceOptions.SCHEMA_NAME);
+        this.sslmode =
+                config.getOptional(PostgresIncrementalSourceOptions.SSL_MODE)
+                        .map(PostgresSourceConfigFactory::validateSslMode)
+                        .orElse(null);
+        this.publicationName =
+                config.getOptional(PostgresIncrementalSourceOptions.PUBLICATION_NAME)
+                        .map(String::trim)
+                        .filter(StringUtils::isNotEmpty)
+                        .orElse(null);
+        this.publicationAutocreateMode =
+                config.getOptional(PostgresIncrementalSourceOptions.PUBLICATION_AUTOCREATE_MODE)
+                        .map(PostgresSourceConfigFactory::validatePublicationAutocreateMode)
+                        .orElse(null);
+        this.heartbeatIntervalMs =
+                config.getOptional(PostgresIncrementalSourceOptions.HEARTBEAT_INTERVAL_MS)
+                        .map(PostgresSourceConfigFactory::validateHeartbeatIntervalMs)
+                        .orElse(null);
         return this;
     }
 
     @Override
-    public PostgresSourceConfig create(int subtask) {
-        Properties props = new Properties();
-        props.setProperty("connector.class", PostgresConnector.class.getCanonicalName());
-        // hard code server name, because we don't need to distinguish it, docs:
-        // Logical name that identifies and provides a namespace for the particular PostgreSQL
-        // database server/cluster being monitored. The logical name should be unique across
-        // all other connectors, since it is used as a prefix for all Kafka topic names coming
-        // from this connector. Only alphanumeric characters and underscores should be used.
-        props.setProperty("database.server.name", DATABASE_SERVER_NAME);
-        props.setProperty("database.hostname", checkNotNull(hostname));
-        props.setProperty("database.user", checkNotNull(username));
-        props.setProperty("database.password", checkNotNull(password));
-        props.setProperty("database.port", String.valueOf(port));
-        props.setProperty("database.dbname", checkNotNull(databaseList.get(0)));
-        // Deliberately do NOT set "database.include.list": Debezium folds it into
-        // dataCollectionFilter() as a predicate on TableId#catalog, but PostgreSQL table ids are
-        // catalog-less (see PostgresSchema#readTableSchema and the event dispatchers), so every
-        // snapshot schema read and streaming event would be filtered out. Database scoping for
-        // discovery is applied in TableDiscoveryUtils#listTables via an explicit predicate.
+    protected String connectorClassName() {
+        return PostgresConnector.class.getCanonicalName();
+    }
+
+    @Override
+    protected String databaseServerName() {
+        return DATABASE_SERVER_NAME;
+    }
+
+    @Override
+    protected String driverClassName() {
+        return DRIVER_CLASS_NAME;
+    }
+
+    @Override
+    protected void configureConnectorProperties(Properties props, int subtask) {
         props.setProperty("plugin.name", decodingPluginName);
         props.setProperty("slot.name", slotName);
-
-        // database history
-        props.setProperty("database.history", EmbeddedDatabaseHistory.class.getCanonicalName());
-        props.setProperty("database.history.instance.name", UUID.randomUUID() + "_" + subtask);
-        props.setProperty("database.history.skip.unparseable.ddl", String.valueOf(true));
-        props.setProperty("database.history.refer.ddl", String.valueOf(true));
-
-        props.setProperty("database.tcpKeepAlive", String.valueOf(true));
         if (schemaList != null) {
             props.setProperty("schema.include.list", String.join(",", schemaList));
         }
+        props.setProperty(
+                "heartbeat.interval.ms",
+                String.valueOf(
+                        PostgresIncrementalSourceOptions.HEARTBEAT_INTERVAL_MS.defaultValue()));
+    }
 
-        if (tableList != null) {
-            // pg identifier is of the form schemaName.tableName
-            props.setProperty(
-                    "table.include.list",
-                    tableList.stream()
-                            .map(
-                                    tableStr -> {
-                                        String[] splits = tableStr.split("\\.");
-                                        if (splits.length == 2) {
-                                            return tableStr;
-                                        }
-                                        if (splits.length == 3) {
-                                            return String.join(".", splits[1], splits[2]);
-                                        }
-                                        throw new IllegalArgumentException(
-                                                "Invalid table name: "
-                                                        + tableStr
-                                                        + " ,Postgres identifier is of the form schemaName.tableName");
-                                    })
-                            .collect(Collectors.joining(",")));
+    /**
+     * Writes sslmode and publication options after {@code debezium{}} is merged so the SeaTunnel
+     * options stay authoritative.
+     *
+     * <p>sslmode resolution: SeaTunnel {@code sslmode} if set, else the JDBC URL {@code sslmode}
+     * query parameter, else the property is left unset. Publication properties are written only
+     * when the matching SeaTunnel option is set. An explicit top-level {@code
+     * heartbeat.interval.ms} also wins over {@code debezium.heartbeat.interval.ms}.
+     */
+    @Override
+    protected void applyAuthoritativeConnectorProperties(Properties props) {
+        String resolvedSslMode = resolveSslMode();
+        if (resolvedSslMode != null) {
+            props.setProperty("database.sslmode", resolvedSslMode);
         }
+        if (StringUtils.isNotEmpty(publicationName)) {
+            props.setProperty("publication.name", publicationName);
+        }
+        if (StringUtils.isNotEmpty(publicationAutocreateMode)) {
+            props.setProperty("publication.autocreate.mode", publicationAutocreateMode);
+        }
+        if (heartbeatIntervalMs != null) {
+            props.setProperty("heartbeat.interval.ms", String.valueOf(heartbeatIntervalMs));
+        }
+    }
 
-        if (dbzProperties != null) {
-            props.putAll(dbzProperties);
+    private String resolveSslMode() {
+        if (StringUtils.isNotEmpty(sslmode)) {
+            return sslmode;
         }
-        // Debezium PostgreSQL does not emit DDL records, but SeaTunnel uses this flag to enable
-        // synthetic schema records produced from pgoutput RELATION messages. Apply it after the
-        // Debezium pass-through properties so the SeaTunnel option remains authoritative.
-        props.setProperty("include.schema.changes", String.valueOf(schemaChangeEnabled));
-        if (startupConfig != null && startupConfig.getStartupMode() == StartupMode.SNAPSHOT_ONLY) {
-            props.setProperty("snapshot.mode", "initial_only");
-        } else if (startupConfig != null
-                && startupConfig.getStartupMode() == StartupMode.COMMITTED_OFFSET) {
-            props.setProperty("snapshot.mode", "never");
-        }
+        return sslModeFromJdbcUrl(originUrl);
+    }
 
-        PostgresSourceConfig config =
-                new PostgresSourceConfig(
-                        startupConfig,
-                        stopConfig,
-                        databaseList,
-                        tableList,
-                        splitSize,
-                        splitColumn,
-                        distributionFactorUpper,
-                        distributionFactorLower,
-                        sampleShardingThreshold,
-                        inverseSamplingRate,
-                        sampleShardingAllow,
-                        props,
-                        DRIVER_CLASS_NAME,
-                        hostname,
-                        port,
-                        username,
-                        password,
-                        originUrl,
-                        fetchSize,
-                        serverTimeZone,
-                        connectTimeoutMillis,
-                        connectMaxRetries,
-                        connectionPoolSize,
-                        exactlyOnce);
-        // Propagate the enableConcurrentRead flag so the chunk splitter can skip split analysis.
-        config.setEnableConcurrentRead(this.enableConcurrentRead);
-        return config;
+    /**
+     * Reads {@code sslmode} from a JDBC URL query string such as {@code ?sslmode=disable}.
+     *
+     * @param jdbcUrl original JDBC URL, possibly including a query suffix
+     * @return sslmode value, or {@code null} when the URL has no sslmode parameter
+     */
+    static String sslModeFromJdbcUrl(String jdbcUrl) {
+        if (jdbcUrl == null) {
+            return null;
+        }
+        int queryStart = jdbcUrl.indexOf('?');
+        if (queryStart < 0 || queryStart + 1 >= jdbcUrl.length()) {
+            return null;
+        }
+        String query = jdbcUrl.substring(queryStart + 1);
+        int fragmentStart = query.indexOf('#');
+        if (fragmentStart >= 0) {
+            query = query.substring(0, fragmentStart);
+        }
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq <= 0) {
+                continue;
+            }
+            if ("sslmode".equalsIgnoreCase(pair.substring(0, eq).trim())) {
+                String value = pair.substring(eq + 1).trim();
+                return value.isEmpty() ? null : value;
+            }
+        }
+        return null;
+    }
+
+    private static String validateSslMode(String sslMode) {
+        String normalized = sslMode == null ? null : sslMode.trim().toLowerCase(Locale.ROOT);
+        if (StringUtils.isEmpty(normalized)) {
+            return null;
+        }
+        if (!SSL_MODES.contains(normalized)) {
+            throw new IllegalArgumentException(
+                    "Invalid sslmode '"
+                            + sslMode
+                            + "'. Valid values: disable, allow, prefer, require, verify-ca, verify-full.");
+        }
+        return normalized;
+    }
+
+    private static Long validateHeartbeatIntervalMs(Long intervalMs) {
+        if (intervalMs == null) {
+            return null;
+        }
+        if (intervalMs < 0) {
+            throw new IllegalArgumentException(
+                    "heartbeat.interval.ms must be >= 0, but was " + intervalMs);
+        }
+        return intervalMs;
+    }
+
+    private static String validatePublicationAutocreateMode(String mode) {
+        String normalized = mode == null ? null : mode.trim().toLowerCase(Locale.ROOT);
+        if (StringUtils.isEmpty(normalized)) {
+            return null;
+        }
+        if (!PUBLICATION_AUTOCREATE_MODES.contains(normalized)) {
+            throw new IllegalArgumentException(
+                    "Invalid publication.autocreate.mode '"
+                            + mode
+                            + "'. Valid values: disabled, filtered, all_tables.");
+        }
+        return normalized;
+    }
+
+    @Override
+    protected PostgresSourceConfig createSourceConfig(Properties props, String driverClassName) {
+        return new PostgresSourceConfig(
+                startupConfig,
+                stopConfig,
+                databaseList,
+                tableList,
+                splitSize,
+                splitColumn,
+                distributionFactorUpper,
+                distributionFactorLower,
+                sampleShardingThreshold,
+                inverseSamplingRate,
+                sampleShardingAllow,
+                props,
+                driverClassName,
+                hostname,
+                port,
+                username,
+                password,
+                originUrl,
+                fetchSize,
+                serverTimeZone,
+                connectTimeoutMillis,
+                connectMaxRetries,
+                connectionPoolSize,
+                exactlyOnce);
     }
 }

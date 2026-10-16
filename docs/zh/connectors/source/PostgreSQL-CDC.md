@@ -22,6 +22,8 @@ import ChangeLog from '../changelog/connector-cdc-postgres.md';
 
 PostgreSQL CDC 连接器允许从 PostgreSQL 数据库读取快照数据和增量数据。本文档介绍如何配置 PostgreSQL CDC 连接器。
 
+在云 RDS 上，优先使用内网或 VPC 地址，并配合 `sslmode=disable`；同时将 `publication.autocreate.mode` 设为 `disabled`，并预先创建 `FOR TABLE` publication。
+
 部分 PostgreSQL 兼容数据库（例如 HighGo）在 `information_schema.tables` 中会对同一张物理表返回多行重复记录。
 连接器在表发现阶段会按完整的 `catalog.schema.table` 标识去重，这些重复行会被忽略，任务可正常启动。
 
@@ -98,15 +100,19 @@ ALTER TABLE your_table_name REPLICA IDENTITY FULL;
 | table-names                               | List     | 二选一 | -        | 需要监控的表。请使用完整的 `database.schema.table` 格式，例如：`postgres_cdc.inventory.orders`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | table-pattern                             | String   | 二选一 | -        | 需要监控的表名正则表达式。正则需要匹配完整表名，例如：`postgres_cdc\\.inventory\\..*`。`table-names` 和 `table-pattern` 互斥。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | table-names-config                        | List     | 否   | -        | 表级配置列表。例如：`[{"table": "db1.schema1.table1","primaryKeys": ["key1"],"snapshotSplitColumn": "key2"}]`。无物理主键表可通过 `primaryKeys` 指定唯一键。`snapshotSplitColumn` 必须是唯一键，否则 SeaTunnel 会忽略该配置并自动选择拆分列。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| startup.mode                              | Enum     | 否   | INITIAL  | PostgreSQL CDC 消费者的可选启动模式，有效枚举为 `initial`、`snapshot-only`、`committed-offset`、`earliest` 和 `latest`。<br/> `initial`: 启动时同步历史数据，然后同步增量数据。<br/> `snapshot-only`: 仅同步启动时的历史数据，然后以有界任务结束，不进入 WAL 流读取。<br/> `committed-offset`: 跳过快照数据，从配置的复制槽已提交 LSN 开始读取 WAL。该模式要求显式配置 `slot.name`，如果复制槽不存在或没有可用的已提交 LSN，则启动失败。<br/> `earliest`: 从可能的最早偏移量启动。<br/> `latest`: 从最新偏移量启动。 |
+| startup.mode                              | Enum     | 否   | INITIAL  | PostgreSQL CDC 消费者的可选启动模式，有效枚举为 `initial`、`snapshot-only`、`committed-offset`、`earliest` 和 `latest`。<br/> `initial`: 启动时同步历史数据，然后同步增量数据。<br/> `snapshot-only`: 仅同步启动时的历史数据，然后以有界任务结束，不进入 WAL 流读取。<br/> `committed-offset`: 跳过快照数据，从配置的复制槽已提交 LSN 开始读取 WAL。该模式要求显式配置 `slot.name`，如果复制槽不存在或没有可用的已提交 LSN，则启动失败。<br/> `earliest`: 请求 LSN `0/0`。这**不是** Kafka `earliest`，也**不是** MySQL `earliestBinlogOffset`。PostgreSQL 逻辑解码无法从已被回收的 LSN 或早于复制槽 `restart_lsn` 的位置启动。若该 WAL 已不存在，任务会失败（`POSTGRES-05`）；请对已有复制槽使用 `startup.mode=committed-offset`，或使用 `latest` / `initial`。SeaTunnel 不会自动把起点钳制到 `restart_lsn`。<br/> `latest`: 从最新偏移量启动。 |
 | stop.mode                                 | Enum     | 否   | NEVER    | PostgreSQL CDC 消费者的可选停止模式。唯一有效的枚举值是 `never`：一旦进入增量阶段，数据源会持续读取 WAL 变更，不会自行停止。                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | snapshot.split.size                       | Integer  | 否   | 8096     | 表快照的拆分大小（行数），捕获的表在读取表快照时被拆分成多个拆分。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | snapshot.fetch.size                       | Integer  | 否   | 1024     | 读取表快照时每次轮询的最大获取大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | slot.name                                 | String   | 否   | seatunnel | PostgreSQL 逻辑解码槽名称。同一个 PostgreSQL 实例上如果有多个 CDC 任务，请为每个任务配置不同的 `slot.name`。                                                                                                                                                                                                                                                                                                                                                      |
+| heartbeat.interval.ms                     | Long     | 否   | 30000    | 发送心跳事件的间隔（毫秒），用于在捕获表空闲或事件被过滤时推进复制槽偏移。设为 `0` 可关闭。默认 `30000`（30 秒），与 Flink CDC 一致。未设置该一等选项时，仍可使用遗留的 `debezium.heartbeat.interval.ms`；两者同时配置时一等选项优先。数据库完全空闲时还需配置 `debezium.heartbeat.action.query`。 |
+| sslmode                                   | String   | 否   | -        | Debezium 复制连接使用的 PostgreSQL libpq `sslmode`。有效值：`disable`、`allow`、`prefer`、`require`、`verify-ca`、`verify-full`。未设置时，若 JDBC `url` 查询参数中包含 `sslmode` 则使用该值；否则不写入 `database.sslmode`，由 Debezium/pgjdbc 保持 `prefer`。                                                                                                                                                                                                                                                              |
+| publication.name                          | String   | 否   | -        | 用于 `pgoutput` 逻辑复制的 PostgreSQL publication 名称，对应 Debezium `publication.name`。未设置时不写入该属性。                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| publication.autocreate.mode               | String   | 否   | -        | publication 不存在时 Debezium 的创建方式。有效值：`disabled`、`filtered`、`all_tables`，对应 Debezium `publication.autocreate.mode`。未设置时不写入该属性，Debezium 保持 `all_tables`。                                                                                                                                                                                                                                                                                                                                                      |
 | decoding.plugin.name                      | String   | 否   | pgoutput | 安装在服务器上的 Postgres 逻辑解码插件的名称，支持的值有 decoderbufs、wal2json、wal2json_rds、wal2json_streaming、wal2json_rds_streaming 和 pgoutput。                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | server-time-zone                          | String   | 否   | UTC      | 数据库服务器中的会话时区。如果未设置，则使用 ZoneId.systemDefault() 来确定服务器时区。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | connect.timeout.ms                        | Duration | 否   | 30000    | 连接器在尝试连接到数据库服务器后应等待的最大时间，以防超时。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| connect.max-retries                       | Integer  | 否   | 3        | 连接器应重试建立数据库服务器连接的最大重试次数。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| connect.max-retries                       | Integer  | 否   | 3        | 连接器应重试建立数据库服务器连接的最大重试次数。同一有限预算也约束 WAL COPY 重连以及 JDBC probe 重连。预算耗尽后任务失败，错误中包含最后的 LSN 以及 attempt/max retries。默认值仍为 `3`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | connection.pool.size                      | Integer  | 否   | 20       | JDBC 连接池大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | chunk-key.even-distribution.factor.upper-bound | Double   | 否   | 100      | 块键分布因子的上限。此因子用于确定表数据是否均匀分布。如果计算出的分布因子小于或等于此上限（即 (MAX(id) - MIN(id) + 1) / 行数），则将优化表块以实现均匀分布。否则，如果分布因子更大，则将认为该表分布不均匀，并且如果估计的分片数量超过 `sample-sharding.threshold` 指定的值，则将使用基于采样的分片策略。默认值为 100.0。 |
 | chunk-key.even-distribution.factor.lower-bound | Double   | 否   | 0.05     | 块键分布因子的下限。此因子用于确定表数据是否均匀分布。如果计算出的分布因子大于或等于此下限（即 (MAX(id) - MIN(id) + 1) / 行数），则将优化表块以实现均匀分布。否则，如果分布因子更小，则将认为该表分布不均匀，并且如果估计的分片数量超过 `sample-sharding.threshold` 指定的值，则将使用基于采样的分片策略。默认值为 0.05。  |
@@ -221,9 +227,31 @@ source {
 }
 ```
 
+### 配置 sslmode 与 publication
+
+请使用一等选项，而不是只把这些键放在 `debezium{}` 中。在云 RDS 上，优先使用内网地址并设置 `sslmode=disable`，同时预先创建 `FOR TABLE` publication。
+
+```hocon
+source {
+  Postgres-CDC {
+    username = "postgres"
+    password = "postgres"
+    database-names = ["postgres_cdc"]
+    table-names = ["postgres_cdc.inventory.postgres_cdc_table_1"]
+    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
+    slot.name = "seatunnel_postgres_cdc"
+    sslmode = "disable"
+    publication.name = "seatunnel_pub"
+    publication.autocreate.mode = "disabled"
+  }
+}
+```
+
 ### 配置 Debezium 心跳
 
-对于低流量表，Postgres 逻辑解码槽的位置只有在 WAL 中发生行变更时才会推进。使用 Debezium 心跳让槽位持续推进，便于 checkpoint 定期记录偏移，并让复制延迟可观测。心跳表必须提前在 Postgres 服务端创建。
+对于低流量表，Postgres 逻辑解码槽的位置只有在 WAL 中发生行变更时才会推进。请使用一等选项 `heartbeat.interval.ms`（默认 `30000`，与 Flink CDC 一致）在捕获事件被过滤时推进槽位偏移。设为 `0` 可关闭。未设置该一等选项时，遗留的 `debezium.heartbeat.interval.ms` 仍然生效。
+
+数据库完全空闲时，还需配置 `debezium.heartbeat.action.query` 写入复制槽能够解码的行。心跳表必须提前在 Postgres 服务端创建。
 
 ```hocon
 source {
@@ -236,8 +264,8 @@ source {
     url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
     decoding.plugin.name = "decoderbufs"
     slot.name = "seatunnel_postgres_cdc"
+    heartbeat.interval.ms = 30000
     debezium {
-      heartbeat.interval.ms = 100
       heartbeat.action.query = "INSERT INTO inventory.heartbeat (ts) VALUES (NOW())"
     }
   }
@@ -375,6 +403,24 @@ SeaTunnel 在任务启动时会创建或复用 `slot.name` 指定的复制槽。
 `committed-offset` 时，复制槽必须已存在，因为 SeaTunnel 会使用其 `confirmed_flush_lsn`
 作为启动偏移量。未使用的复制槽会持续占用磁盘上的 WAL 段，导致 WAL 持续增长。当 CDC
 任务永久下线时，应在 PostgreSQL 侧手动删除不再使用的复制槽。
+
+### 为什么 `startup.mode=earliest` 会因 WAL LSN 不可用而失败？
+
+`startup.mode=earliest` 请求的是 LSN `0/0`。这不是 Kafka `earliest`，也不是 MySQL `earliestBinlogOffset`。PostgreSQL 逻辑解码无法从已被回收的 LSN 或早于复制槽 `restart_lsn` 的位置启动。SeaTunnel 不会自动把起点钳制到 `restart_lsn`。若请求的 WAL 已不存在，任务会以 `POSTGRES-05` 失败，并提示对已有复制槽使用 `startup.mode=committed-offset`，或使用 `latest` / `initial`。
+
+### 为什么任务报错 "replication slot ... has been invalidated"？
+
+PostgreSQL 13 及以上版本会在某些情况下使复制槽失效，例如复制槽落后超过 `max_slot_wal_keep_size`、
+空闲时间超过 `idle_replication_slot_timeout`（PostgreSQL 18），或在备库上与恢复冲突。此时 `pg_replication_slots` 中的
+`wal_status` 为 `lost`、`conflicting` 为 `true`（PostgreSQL 16 及以上版本），或显示 `invalidation_reason`（PostgreSQL 17 及以上版本）。复制槽已确认位置之后的变更已无法读取，
+因此需要从复制槽读取变更的任务会以错误 `POSTGRES-04` 失败；`snapshot-only` 任务不使用复制槽，不受影响。请执行 `SELECT pg_drop_replication_slot('<slot.name>')`
+删除该复制槽，并在不从 checkpoint 或 savepoint 恢复的情况下重新启动任务；如需重新做快照，请使用 `startup.mode = initial`。
+
+### 从保存点恢复时如何处理事务边界？
+
+恢复时会区分保存的事务提交记录与已处理的数据行，因为事务提交和下一事务的第一条数据行
+可能具有相同的 LSN。任务停止期间提交的数据仍可被重放。不包含操作类型的旧保存点仍可读取；
+为避免丢失数据，恢复时可能重放无法明确区分的边界记录。
 
 ### PostgreSQL CDC 为什么会滞后？
 
