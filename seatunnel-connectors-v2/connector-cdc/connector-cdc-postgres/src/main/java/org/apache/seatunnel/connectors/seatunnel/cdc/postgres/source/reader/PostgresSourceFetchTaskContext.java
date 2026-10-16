@@ -303,6 +303,7 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
      * object.
      */
     public void reopenJdbcDataConnection() throws SQLException {
+        log.info("Reopening JDBC dataConnection in-place before WAL retry");
         reopenJdbcDataConnection(dataConnection);
     }
 
@@ -328,6 +329,7 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
      * method ends with {@code dataConnection.commit()} which fails if JDBC is still dead.
      */
     public void reopenReplicationConnection() {
+        log.info("Reopening the PostgreSQL replication connection after JDBC reconnect");
         if (replicationConnection != null) {
             try {
                 replicationConnection.close();
