@@ -197,42 +197,14 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
             final SlotState slotInfo =
                     initSnapshotter(snapshotter, connectorConfig, offsetState, dataConnection);
 
-            if (snapshotter.shouldStream()) {
+            if (snapshotter.shouldStream() && this.replicationConnection == null) {
                 // we need to create the slot before we start streaming if it doesn't exist
                 // otherwise we can't stream back changes happening while the snapshot is taking
                 // place
-                if (this.replicationConnection == null) {
-                    this.replicationConnection =
-                            PostgresObjectUtils.createReplicationConnection(
-                                    this.taskContext,
-                                    dataConnection,
-                                    snapshotter.shouldSnapshot(),
-                                    connectorConfig);
-                    if (slotInfo == null) {
-                        try {
-                            replicationConnection.createReplicationSlot().orElse(null);
-                        } catch (SQLException ex) {
-                            String message = "Creation of replication slot failed";
-                            // PostgreSQL errors all have a 5-character SQLSTATE code, following the
-                            // SQL standard specification
-                            // https://www.postgresql.org/docs/current/errcodes-appendix.html
-                            if ("42710".equals(ex.getSQLState())) {
-                                message +=
-                                        "; when setting up multiple connectors for the same database host, please make sure to use a distinct replication slot name for each.";
-                                log.warn(message);
-                            } else {
-                                throw new DebeziumException(message, ex);
-                            }
-                        }
-                    }
-                }
+                openReplicationConnection(connectorConfig, slotInfo == null);
             }
 
-            try {
-                dataConnection.commit();
-            } catch (SQLException e) {
-                throw new DebeziumException(e);
-            }
+            commitDataConnection();
 
             this.queue =
                     new ChangeEventQueue.Builder<DataChangeEvent>()
@@ -291,6 +263,94 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
             this.errorHandler = new PostgresErrorHandler(connectorConfig, queue);
         } finally {
             previousContext.restore();
+        }
+    }
+
+    /**
+     * Closes and reconnects the JDBC {@code dataConnection} in place.
+     *
+     * <p>The field is {@code final} and is captured by {@code HeartbeatFactory} / {@code
+     * DefaultHeartbeatConnectionProvider}, so a replacement instance would leave heartbeats on the
+     * dead socket. Debezium {@code JdbcConnection.close()} then {@code connect()} reuses this
+     * object.
+     */
+    public void reopenJdbcDataConnection() throws SQLException {
+        log.info("Reopening JDBC dataConnection in-place before WAL retry");
+        reopenJdbcDataConnection(dataConnection);
+    }
+
+    /**
+     * Closes and reconnects {@code dataConnection} without replacing the object.
+     *
+     * @param dataConnection the captured JDBC connection used by WAL streaming and heartbeats
+     */
+    public static void reopenJdbcDataConnection(PostgresConnection dataConnection)
+            throws SQLException {
+        try {
+            dataConnection.close();
+        } catch (Exception e) {
+            log.warn("Failed to close the JDBC dataConnection before WAL retry", e);
+        }
+        dataConnection.connect();
+    }
+
+    /**
+     * Closes the current replication connection and opens a new one for WAL retry.
+     *
+     * <p>The replication slot already exists. Duplicate-slot SQLState {@code 42710} is tolerated
+     * the same way as {@link #configure(SourceSplitBase)}. Callers must reopen JDBC first: this
+     * method ends with {@code dataConnection.commit()} which fails if JDBC is still dead.
+     */
+    public void reopenReplicationConnection() {
+        log.info("Reopening the PostgreSQL replication connection after JDBC reconnect");
+        if (replicationConnection != null) {
+            try {
+                replicationConnection.close();
+            } catch (Exception e) {
+                log.warn("Failed to close the previous replication connection before WAL retry", e);
+            }
+            replicationConnection = null;
+        }
+        if (snapshotter == null || !snapshotter.shouldStream()) {
+            throw new DebeziumException(
+                    "Cannot reopen a PostgreSQL replication connection because streaming is not enabled");
+        }
+        openReplicationConnection(getDbzConnectorConfig(), true);
+        commitDataConnection();
+    }
+
+    private void openReplicationConnection(
+            PostgresConnectorConfig connectorConfig, boolean createSlotIfNeeded) {
+        this.replicationConnection =
+                PostgresObjectUtils.createReplicationConnection(
+                        this.taskContext,
+                        dataConnection,
+                        snapshotter.shouldSnapshot(),
+                        connectorConfig);
+        if (createSlotIfNeeded) {
+            try {
+                replicationConnection.createReplicationSlot().orElse(null);
+            } catch (SQLException ex) {
+                String message = "Creation of replication slot failed";
+                // PostgreSQL errors all have a 5-character SQLSTATE code, following the
+                // SQL standard specification
+                // https://www.postgresql.org/docs/current/errcodes-appendix.html
+                if ("42710".equals(ex.getSQLState())) {
+                    message +=
+                            "; when setting up multiple connectors for the same database host, please make sure to use a distinct replication slot name for each.";
+                    log.warn(message);
+                } else {
+                    throw new DebeziumException(message, ex);
+                }
+            }
+        }
+    }
+
+    private void commitDataConnection() {
+        try {
+            dataConnection.commit();
+        } catch (SQLException e) {
+            throw new DebeziumException(e);
         }
     }
 

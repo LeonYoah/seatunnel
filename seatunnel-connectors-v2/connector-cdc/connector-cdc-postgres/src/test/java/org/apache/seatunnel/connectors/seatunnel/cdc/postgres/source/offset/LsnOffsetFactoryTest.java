@@ -19,6 +19,10 @@ package org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.offset;
 
 import org.apache.seatunnel.common.exception.SeaTunnelRuntimeException;
 import org.apache.seatunnel.common.utils.SerializationUtils;
+import org.apache.seatunnel.connectors.cdc.base.source.offset.Offset;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.config.PostgresSourceConfig;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.config.PostgresSourceConfigFactory;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.PostgresDialect;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -34,6 +38,20 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class LsnOffsetFactoryTest {
+
+    @Test
+    public void shouldReturnInitialOffsetZeroSlashZeroForEarliest() {
+        PostgresSourceConfigFactory configFactory = mock(PostgresSourceConfigFactory.class);
+        when(configFactory.create(0)).thenReturn(mock(PostgresSourceConfig.class));
+        LsnOffsetFactory factory = new LsnOffsetFactory(configFactory, mock(PostgresDialect.class));
+
+        Offset earliest = factory.earliest();
+
+        Assertions.assertSame(LsnOffset.INITIAL_OFFSET, earliest);
+        Assertions.assertEquals(Lsn.INVALID_LSN, ((LsnOffset) earliest).getLsn());
+        Assertions.assertEquals(0L, ((LsnOffset) earliest).getLsn().asLong());
+        Assertions.assertEquals("0/0", ((LsnOffset) earliest).getLsn().asString());
+    }
 
     @Test
     public void shouldCreateRestartableOffsetFromCommittedLsn() {
