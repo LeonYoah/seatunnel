@@ -745,6 +745,179 @@ public class PostgresCDCIT extends TestSuiteBase implements TestResource {
         }
     }
 
+    /**
+     * Verifies WAL COPY and JDBC disconnect auto-reconnect across multiple separate disconnect
+     * waves (with {@code connect.max-retries = 1}, proving consecutive failure counter reset),
+     * {@code publication.name} auto-creation, and top-level {@code heartbeat.interval.ms} advancing
+     * {@code confirmed_flush_lsn} after reconnect while the monitored table is idle.
+     *
+     * <p>{@code publication.autocreate.mode = all_tables} is required for the heartbeat LSN check:
+     * pgoutput only ships changes for published tables, so a filtered publication would never
+     * deliver the unmonitored-table WAL that heartbeat is supposed to acknowledge.
+     */
+    @TestTemplate
+    @DisabledOnContainer(
+            value = {},
+            type = {EngineType.SPARK, EngineType.FLINK},
+            disabledReason =
+                    "This case manages Zeta streaming job lifecycle and verifies Postgres-CDC WAL reconnect and heartbeat LSN advancement.")
+    public void testWalDisconnectReconnectAndHeartbeatStability(TestContainer container)
+            throws Exception {
+        String slotName = createSlotName();
+        String publicationName = "pub_" + slotName;
+        Long jobId = JobIdGenerator.newJobId();
+        CompletableFuture<Void> jobFuture = null;
+        try {
+            clearTable(POSTGRESQL_SCHEMA, SOURCE_TABLE_1);
+            clearTable(POSTGRESQL_SCHEMA, SINK_TABLE_1);
+            clearTable(POSTGRESQL_SCHEMA, SOURCE_TABLE_2);
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 1);
+
+            jobFuture =
+                    CompletableFuture.runAsync(
+                            () -> {
+                                try {
+                                    container.executeJob(
+                                            "/postgrescdc_to_postgres_wal_reconnect_stability.conf",
+                                            String.valueOf(jobId),
+                                            toSlotVariable(slotName),
+                                            "publication_name=" + publicationName);
+                                } catch (Exception e) {
+                                    log.error("WAL reconnect stability job exception", e);
+                                    throw new RuntimeException(e);
+                                }
+                            });
+            CompletableFuture<Void> runningJob = jobFuture;
+
+            // Phase 1: Snapshot sync, streaming handoff, and publication.name verification
+            await().atMost(60000, TimeUnit.MILLISECONDS)
+                    .untilAsserted(
+                            () -> {
+                                assertJobHasNoAsyncFailure(runningJob);
+                                Assertions.assertIterableEquals(
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SOURCE_TABLE_1)),
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SINK_TABLE_1)));
+                            });
+            waitForReplicationSlotActive(slotName);
+
+            Assertions.assertEquals(
+                    Collections.singletonList(Collections.singletonList(true)),
+                    query(
+                            "SELECT puballtables FROM pg_publication WHERE pubname = '"
+                                    + publicationName
+                                    + "'"),
+                    "publication.name must be created with publication.autocreate.mode=all_tables");
+
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 2);
+            await().atMost(60000, TimeUnit.MILLISECONDS)
+                    .untilAsserted(
+                            () -> {
+                                assertJobHasNoAsyncFailure(runningJob);
+                                Assertions.assertIterableEquals(
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SOURCE_TABLE_1)),
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SINK_TABLE_1)));
+                            });
+
+            // Phase 2: Disconnect Wave 1 (terminate both WAL walsender and CDC JDBC connections)
+            String sessionWave1 = getReplicationSlotActiveSessionId(slotName);
+            Assertions.assertNotNull(sessionWave1);
+            terminateCdcSourceConnections(slotName);
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 3);
+
+            await().atMost(60000, TimeUnit.MILLISECONDS)
+                    .untilAsserted(
+                            () -> {
+                                assertJobHasNoAsyncFailure(runningJob);
+                                String reconnectedSession =
+                                        getReplicationSlotActiveSessionId(slotName);
+                                Assertions.assertNotNull(reconnectedSession);
+                                Assertions.assertNotEquals(sessionWave1, reconnectedSession);
+                                Assertions.assertIterableEquals(
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SOURCE_TABLE_1)),
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SINK_TABLE_1)));
+                            });
+
+            // Phase 3: Disconnect Wave 2 (with connect.max-retries = 1, surviving a second
+            // disconnect wave proves consecutiveFailures was reset after Wave 1 recovered)
+            String sessionWave2 = getReplicationSlotActiveSessionId(slotName);
+            Assertions.assertNotNull(sessionWave2);
+            terminateCdcSourceConnections(slotName);
+            updateSourceTableBigField(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 3, 99999);
+            deleteSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 2);
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 4);
+
+            await().atMost(60000, TimeUnit.MILLISECONDS)
+                    .untilAsserted(
+                            () -> {
+                                assertJobHasNoAsyncFailure(runningJob);
+                                String reconnectedSession =
+                                        getReplicationSlotActiveSessionId(slotName);
+                                Assertions.assertNotNull(reconnectedSession);
+                                Assertions.assertNotEquals(sessionWave2, reconnectedSession);
+                                Assertions.assertIterableEquals(
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SOURCE_TABLE_1)),
+                                        query(getQuerySQL(POSTGRESQL_SCHEMA, SINK_TABLE_1)));
+                            });
+
+            // Phase 4: Post-reconnect heartbeat LSN advancement while monitored table is idle.
+            // pgoutput + all_tables ships SOURCE_TABLE_2 WAL; SeaTunnel filters it and heartbeat
+            // / checkpoint must still acknowledge that LSN.
+            await().atMost(30000, TimeUnit.MILLISECONDS)
+                    .untilAsserted(
+                            () ->
+                                    Assertions.assertNotNull(
+                                            getReplicationSlotCommittedLsn(slotName)));
+            String baselineFlushLsn = getReplicationSlotCommittedLsn(slotName);
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_2, 100);
+            String unmonitoredWalLsn = getCurrentWalLsn();
+            Assertions.assertTrue(
+                    Lsn.valueOf(unmonitoredWalLsn).compareTo(Lsn.valueOf(baselineFlushLsn)) > 0,
+                    "Unmonitored table write must advance WAL past baseline confirmed_flush_lsn");
+
+            AtomicReference<Integer> nextUnmonitoredId = new AtomicReference<>(101);
+            await().pollInterval(1, TimeUnit.SECONDS)
+                    .atMost(60000, TimeUnit.MILLISECONDS)
+                    .untilAsserted(
+                            () -> {
+                                assertJobHasNoAsyncFailure(runningJob);
+                                String currentFlushLsn = getReplicationSlotCommittedLsn(slotName);
+                                if (currentFlushLsn == null
+                                        || !isLsnGreaterThanOrEqual(
+                                                currentFlushLsn, unmonitoredWalLsn)) {
+                                    insertSourceTableRow(
+                                            POSTGRESQL_SCHEMA,
+                                            SOURCE_TABLE_2,
+                                            nextUnmonitoredId.getAndUpdate(v -> v + 1));
+                                }
+                                Assertions.assertTrue(
+                                        isLsnGreaterThanOrEqual(
+                                                getReplicationSlotCommittedLsn(slotName),
+                                                unmonitoredWalLsn),
+                                        "heartbeat.interval.ms must advance confirmed_flush_lsn past unmonitored table writes after reconnect");
+                            });
+        } finally {
+            try {
+                try {
+                    container.cancelJob(String.valueOf(jobId));
+                } catch (Exception e) {
+                    log.warn("Failed to cancel WAL reconnect stability test job", e);
+                }
+                if (jobFuture != null) {
+                    jobFuture.get(30, TimeUnit.SECONDS);
+                }
+                await().ignoreExceptions()
+                        .atMost(30, TimeUnit.SECONDS)
+                        .untilAsserted(
+                                () -> Assertions.assertFalse(isReplicationSlotActive(slotName)));
+            } finally {
+                executePostgresAdminSql("DROP PUBLICATION IF EXISTS " + publicationName);
+                clearTable(POSTGRESQL_SCHEMA, SOURCE_TABLE_1);
+                clearTable(POSTGRESQL_SCHEMA, SINK_TABLE_1);
+                clearTable(POSTGRESQL_SCHEMA, SOURCE_TABLE_2);
+            }
+        }
+    }
+
     @TestTemplate
     @DisabledOnContainer(
             value = {},
@@ -1503,7 +1676,45 @@ public class PostgresCDCIT extends TestSuiteBase implements TestResource {
     }
 
     private boolean isLsnGreaterThanOrEqual(String actualLsn, String expectedLsn) {
+        if (actualLsn == null || expectedLsn == null) {
+            return false;
+        }
         return Lsn.valueOf(actualLsn).compareTo(Lsn.valueOf(expectedLsn)) >= 0;
+    }
+
+    private String getReplicationSlotActiveSessionId(String slotName) {
+        try (Connection connection = getJdbcConnection();
+                Statement statement = connection.createStatement();
+                ResultSet resultSet =
+                        statement.executeQuery(
+                                "SELECT s.active_pid::text || '@' || COALESCE(a.backend_start::text, '') "
+                                        + "FROM pg_replication_slots s "
+                                        + "LEFT JOIN pg_stat_activity a ON s.active_pid = a.pid "
+                                        + "WHERE s.slot_name = '"
+                                        + slotName
+                                        + "' AND s.active = true AND s.active_pid IS NOT NULL")) {
+            if (!resultSet.next()) {
+                return null;
+            }
+            return resultSet.getString(1);
+        } catch (SQLException e) {
+            throw new RuntimeException(
+                    "Failed to query active session for replication slot: " + slotName, e);
+        }
+    }
+
+    private void terminateCdcSourceConnections(String slotName) {
+        executePostgresAdminSql(
+                "SELECT pg_terminate_backend(pid) "
+                        + "FROM pg_stat_activity "
+                        + "WHERE pid <> pg_backend_pid() "
+                        + "AND COALESCE(application_name, '') <> 'seatunnel_jdbc_sink' "
+                        + "AND (datname = '"
+                        + POSTGRESQL_DATABASE
+                        + "' OR pid IN ("
+                        + "SELECT active_pid FROM pg_replication_slots WHERE slot_name = '"
+                        + slotName
+                        + "' AND active_pid IS NOT NULL))");
     }
 
     private void dropReplicationSlot(String slotName) {
