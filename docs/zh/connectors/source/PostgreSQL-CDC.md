@@ -105,6 +105,7 @@ ALTER TABLE your_table_name REPLICA IDENTITY FULL;
 | snapshot.split.size                       | Integer  | 否   | 8096     | 表快照的拆分大小（行数），捕获的表在读取表快照时被拆分成多个拆分。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | snapshot.fetch.size                       | Integer  | 否   | 1024     | 读取表快照时每次轮询的最大获取大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | slot.name                                 | String   | 否   | seatunnel | PostgreSQL 逻辑解码槽名称。同一个 PostgreSQL 实例上如果有多个 CDC 任务，请为每个任务配置不同的 `slot.name`。                                                                                                                                                                                                                                                                                                                                                      |
+| heartbeat.interval.ms                     | Long     | 否   | 30000    | 发送心跳事件的间隔（毫秒），用于在捕获表空闲或事件被过滤时推进复制槽偏移。设为 `0` 可关闭。默认 `30000`（30 秒），与 Flink CDC 一致。未设置该一等选项时，仍可使用遗留的 `debezium.heartbeat.interval.ms`；两者同时配置时一等选项优先。数据库完全空闲时还需配置 `debezium.heartbeat.action.query`。 |
 | sslmode                                   | String   | 否   | -        | Debezium 复制连接使用的 PostgreSQL libpq `sslmode`。有效值：`disable`、`allow`、`prefer`、`require`、`verify-ca`、`verify-full`。未设置时，若 JDBC `url` 查询参数中包含 `sslmode` 则使用该值；否则不写入 `database.sslmode`，由 Debezium/pgjdbc 保持 `prefer`。                                                                                                                                                                                                                                                              |
 | publication.name                          | String   | 否   | -        | 用于 `pgoutput` 逻辑复制的 PostgreSQL publication 名称，对应 Debezium `publication.name`。未设置时不写入该属性。                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | publication.autocreate.mode               | String   | 否   | -        | publication 不存在时 Debezium 的创建方式。有效值：`disabled`、`filtered`、`all_tables`，对应 Debezium `publication.autocreate.mode`。未设置时不写入该属性，Debezium 保持 `all_tables`。                                                                                                                                                                                                                                                                                                                                                      |
@@ -248,7 +249,9 @@ source {
 
 ### 配置 Debezium 心跳
 
-对于低流量表，Postgres 逻辑解码槽的位置只有在 WAL 中发生行变更时才会推进。使用 Debezium 心跳让槽位持续推进，便于 checkpoint 定期记录偏移，并让复制延迟可观测。心跳表必须提前在 Postgres 服务端创建。
+对于低流量表，Postgres 逻辑解码槽的位置只有在 WAL 中发生行变更时才会推进。请使用一等选项 `heartbeat.interval.ms`（默认 `30000`，与 Flink CDC 一致）在捕获事件被过滤时推进槽位偏移。设为 `0` 可关闭。未设置该一等选项时，遗留的 `debezium.heartbeat.interval.ms` 仍然生效。
+
+数据库完全空闲时，还需配置 `debezium.heartbeat.action.query` 写入复制槽能够解码的行。心跳表必须提前在 Postgres 服务端创建。
 
 ```hocon
 source {
@@ -261,8 +264,8 @@ source {
     url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
     decoding.plugin.name = "decoderbufs"
     slot.name = "seatunnel_postgres_cdc"
+    heartbeat.interval.ms = 30000
     debezium {
-      heartbeat.interval.ms = 100
       heartbeat.action.query = "INSERT INTO inventory.heartbeat (ts) VALUES (NOW())"
     }
   }
