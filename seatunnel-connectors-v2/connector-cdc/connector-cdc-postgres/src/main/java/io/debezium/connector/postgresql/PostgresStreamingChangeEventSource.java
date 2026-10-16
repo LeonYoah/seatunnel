@@ -17,6 +17,9 @@
 
 package io.debezium.connector.postgresql;
 
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.wal.PostgresWalStartLsnUnavailable;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.wal.PostgresWalStreamRetryPolicy;
+
 import org.apache.kafka.connect.errors.ConnectException;
 
 import org.postgresql.core.BaseConnection;
@@ -174,6 +177,14 @@ public class PostgresStreamingChangeEventSource
                                 ? offsetContext.lastCompletelyProcessedLsn()
                                 : offsetContext.lsn();
                 LOGGER.info("Retrieved latest position from stored offset '{}'", lsn);
+                if (PostgresWalStartLsnUnavailable.isUnavailableStartLsn(lsn)) {
+                    // Debezium startStreaming() would replace INVALID/0/0 with the slot
+                    // defaultStartingPos (restart_lsn). That silently changes SeaTunnel
+                    // startup.mode=earliest semantics and is forbidden.
+                    throw PostgresWalStartLsnUnavailable.unavailable(
+                            PostgresWalStartLsnUnavailable.formatLsn(lsn),
+                            connectorConfig.slotName());
+                }
                 walPosition =
                         new WalPositionLocator(
                                 offsetContext.lastCommitLsn(),
@@ -445,8 +456,33 @@ public class PostgresStreamingChangeEventSource
         LOGGER.info("WAL resume position '{}' discovered", resumeLsn.get());
     }
 
+    /**
+     * Probes the JDBC data connection. On a retriable I/O failure, reconnects that same instance
+     * once and retries {@code SELECT 1}. If the probe is still dead, the exception is thrown so
+     * {@code PostgresWalFetchTask} can reopen both JDBC and the WAL COPY stream.
+     */
     private void probeConnectionIfNeeded() throws SQLException {
-        if (connectionProbeTimer.hasElapsed()) {
+        if (!connectionProbeTimer.hasElapsed()) {
+            return;
+        }
+        try {
+            connection.prepareQuery("SELECT 1");
+            connection.commit();
+        } catch (SQLException e) {
+            if (!PostgresWalStreamRetryPolicy.isRetriable(e)) {
+                throw e;
+            }
+            LOGGER.warn(
+                    "Postgres JDBC probe SELECT 1 failed with a retriable I/O error; reconnecting the JDBC data connection in-place once",
+                    e);
+            try {
+                connection.close();
+            } catch (Exception closeException) {
+                LOGGER.warn(
+                        "Failed to close the JDBC data connection after a probe failure",
+                        closeException);
+            }
+            connection.connect();
             connection.prepareQuery("SELECT 1");
             connection.commit();
         }

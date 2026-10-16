@@ -17,6 +17,9 @@
 
 package org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.wal;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.function.BooleanSupplier;
 
 /**
@@ -25,10 +28,15 @@ import java.util.function.BooleanSupplier;
  *
  * <p>Debezium {@code PostgresErrorHandler} would record a {@code RetriableException} on the queue.
  * SeaTunnel's split fetcher then fails the job on {@code queue.poll()}. This policy classifies the
- * same COPY/socket failures and lets {@link PostgresWalFetchTask} open a new replication connection
- * instead.
+ * same COPY/socket failures and lets {@link PostgresWalFetchTask} reopen the JDBC {@code
+ * dataConnection} in place and then a new replication connection.
+ *
+ * <p>Recycled-WAL / requested-LSN-unavailable failures are never retried. The retry budget is
+ * {@code connect.max-retries} and is finite.
  */
-final class PostgresWalStreamRetryPolicy {
+public final class PostgresWalStreamRetryPolicy {
+
+    private static final Logger LOG = LoggerFactory.getLogger(PostgresWalStreamRetryPolicy.class);
 
     private static final String[] RETRIABLE_MESSAGE_FRAGMENTS = {
         "Database connection failed when reading from copy",
@@ -36,6 +44,7 @@ final class PostgresWalStreamRetryPolicy {
         "An I/O error occurred while sending to the backend",
         "This connection has been closed",
         "Socket is closed",
+        "Connection reset",
         "SSL",
         "unexpected message"
     };
@@ -43,12 +52,19 @@ final class PostgresWalStreamRetryPolicy {
     private PostgresWalStreamRetryPolicy() {}
 
     /**
-     * Walks the cause chain and returns whether the failure is a retriable WAL COPY disconnect.
+     * Walks the cause chain and returns whether the failure is a retriable WAL COPY or JDBC
+     * disconnect.
+     *
+     * <p>Requested-WAL-unavailable / recycled-WAL errors are never retriable, even if another
+     * fragment in the chain would otherwise match.
      *
      * @param throwable failure thrown by the streaming source
      * @return {@code true} when a retry should be attempted
      */
-    static boolean isRetriable(Throwable throwable) {
+    public static boolean isRetriable(Throwable throwable) {
+        if (PostgresWalStartLsnUnavailable.isWalStartLsnUnavailable(throwable)) {
+            return false;
+        }
         Throwable current = throwable;
         while (current != null) {
             String message = current.getMessage();
@@ -62,6 +78,41 @@ final class PostgresWalStreamRetryPolicy {
             current = current.getCause();
         }
         return false;
+    }
+
+    /**
+     * Reopens JDBC first, then the replication slot connection.
+     *
+     * <p>A retriable I/O error while reopening is logged and swallowed so the next {@code
+     * streamOnce} can fail and consume another retry. Auth / slot-invalidated failures are thrown
+     * immediately.
+     *
+     * @param reopenJdbc close+connect on the captured {@code dataConnection}
+     * @param reopenReplication recreate the replication connection after JDBC is usable
+     */
+    static void reopenConnectionsOrContinue(
+            StreamAttempt reopenJdbc, StreamAttempt reopenReplication) throws Exception {
+        try {
+            reopenJdbc.run();
+        } catch (Exception e) {
+            if (!isRetriable(e)) {
+                throw e;
+            }
+            LOG.warn(
+                    "Failed to reopen JDBC dataConnection with a retriable I/O error; will retry streaming",
+                    e);
+            return;
+        }
+        try {
+            reopenReplication.run();
+        } catch (Exception e) {
+            if (!isRetriable(e)) {
+                throw e;
+            }
+            LOG.warn(
+                    "Failed to reopen the replication connection with a retriable I/O error; will retry streaming",
+                    e);
+        }
     }
 
     /**

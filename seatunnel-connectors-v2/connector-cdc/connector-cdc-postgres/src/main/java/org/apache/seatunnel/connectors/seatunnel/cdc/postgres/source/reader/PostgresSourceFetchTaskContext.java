@@ -295,10 +295,37 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
     }
 
     /**
+     * Closes and reconnects the JDBC {@code dataConnection} in place.
+     *
+     * <p>The field is {@code final} and is captured by {@code HeartbeatFactory} / {@code
+     * DefaultHeartbeatConnectionProvider}, so a replacement instance would leave heartbeats on the
+     * dead socket. Debezium {@code JdbcConnection.close()} then {@code connect()} reuses this
+     * object.
+     */
+    public void reopenJdbcDataConnection() throws SQLException {
+        reopenJdbcDataConnection(dataConnection);
+    }
+
+    /**
+     * Closes and reconnects {@code dataConnection} without replacing the object.
+     *
+     * @param dataConnection the captured JDBC connection used by WAL streaming and heartbeats
+     */
+    static void reopenJdbcDataConnection(PostgresConnection dataConnection) throws SQLException {
+        try {
+            dataConnection.close();
+        } catch (Exception e) {
+            log.warn("Failed to close the JDBC dataConnection before WAL retry", e);
+        }
+        dataConnection.connect();
+    }
+
+    /**
      * Closes the current replication connection and opens a new one for WAL retry.
      *
      * <p>The replication slot already exists. Duplicate-slot SQLState {@code 42710} is tolerated
-     * the same way as {@link #configure(SourceSplitBase)}.
+     * the same way as {@link #configure(SourceSplitBase)}. Callers must reopen JDBC first: this
+     * method ends with {@code dataConnection.commit()} which fails if JDBC is still dead.
      */
     public void reopenReplicationConnection() {
         if (replicationConnection != null) {
