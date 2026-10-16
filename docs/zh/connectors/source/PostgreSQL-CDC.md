@@ -22,7 +22,7 @@ import ChangeLog from '../changelog/connector-cdc-postgres.md';
 
 PostgreSQL CDC 连接器允许从 PostgreSQL 数据库读取快照数据和增量数据。本文档介绍如何配置 PostgreSQL CDC 连接器。
 
-在云 RDS 上，优先使用内网或 VPC 地址，并配合 `sslmode=disable`；同时将 `publication.autocreate.mode` 设为 `disabled`，并预先创建 `FOR TABLE` publication。
+在云 RDS 上，优先使用专线或 VPC 地址，并配合 `sslmode=disable`。
 
 部分 PostgreSQL 兼容数据库（例如 HighGo）在 `information_schema.tables` 中会对同一张物理表返回多行重复记录。
 连接器在表发现阶段会按完整的 `catalog.schema.table` 标识去重，这些重复行会被忽略，任务可正常启动。
@@ -94,25 +94,25 @@ ALTER TABLE your_table_name REPLICA IDENTITY FULL;
 |                      名称                   | 类型       | 必需 | 默认  | 描述                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 |-------------------------------------------|----------|------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | url                                       | String   | 是   | -        | JDBC 连接的 URL。参考案例：`jdbc:postgresql://localhost:5432/postgres_cdc?loggerLevel=OFF`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| username                                  | String   | 是   | -        | 连接到数据库服务器时使用的数据库名称。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| username                                  | String   | 是   | -        | 连接到数据库服务器时使用的数据库用户名。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | password                                  | String   | 是   | -        | 连接到数据库服务器时使用的密码。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | database-names                            | List     | 否   | -        | 需要监控的数据库名称。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | table-names                               | List     | 二选一 | -        | 需要监控的表。请使用完整的 `database.schema.table` 格式，例如：`postgres_cdc.inventory.orders`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | table-pattern                             | String   | 二选一 | -        | 需要监控的表名正则表达式。正则需要匹配完整表名，例如：`postgres_cdc\\.inventory\\..*`。`table-names` 和 `table-pattern` 互斥。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | table-names-config                        | List     | 否   | -        | 表级配置列表。例如：`[{"table": "db1.schema1.table1","primaryKeys": ["key1"],"snapshotSplitColumn": "key2"}]`。无物理主键表可通过 `primaryKeys` 指定唯一键。`snapshotSplitColumn` 必须是唯一键，否则 SeaTunnel 会忽略该配置并自动选择拆分列。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| startup.mode                              | Enum     | 否   | INITIAL  | PostgreSQL CDC 消费者的可选启动模式，有效枚举为 `initial`、`snapshot-only`、`committed-offset`、`earliest` 和 `latest`。<br/> `initial`: 启动时同步历史数据，然后同步增量数据。<br/> `snapshot-only`: 仅同步启动时的历史数据，然后以有界任务结束，不进入 WAL 流读取。<br/> `committed-offset`: 跳过快照数据，从配置的复制槽已提交 LSN 开始读取 WAL。该模式要求显式配置 `slot.name`，如果复制槽不存在或没有可用的已提交 LSN，则启动失败。<br/> `earliest`: 请求 LSN `0/0`。这**不是** Kafka `earliest`，也**不是** MySQL `earliestBinlogOffset`。PostgreSQL 逻辑解码无法从已被回收的 LSN 或早于复制槽 `restart_lsn` 的位置启动。若该 WAL 已不存在，任务会失败（`POSTGRES-05`）；请对已有复制槽使用 `startup.mode=committed-offset`，或使用 `latest` / `initial`。SeaTunnel 不会自动把起点钳制到 `restart_lsn`。<br/> `latest`: 从最新偏移量启动。 |
+| startup.mode                              | Enum     | 否   | INITIAL  | PostgreSQL CDC 消费者的可选启动模式，有效枚举为 `initial`、`snapshot-only`、`committed-offset`、`earliest` 和 `latest`。<br/> `initial`: 启动时同步历史数据，然后同步增量数据。<br/> `snapshot-only`: 仅同步启动时的历史数据，然后以有界任务结束，不进入 WAL 流读取。<br/> `committed-offset`: 跳过快照数据，从配置的复制槽已提交 LSN 开始读取 WAL。该模式要求显式配置 `slot.name`，如果复制槽不存在或没有可用的已提交 LSN，则启动失败。<br/> `earliest`: 尝试从最早的 WAL 位置（LSN `0/0`）开始读取。PostgreSQL 逻辑复制只能消费尚未被清理、且不早于复制槽 `restart_lsn` 的 WAL 日志；若最早的 WAL 已被回收，任务会报错退出（`POSTGRES-05`），不会跳过已丢失的日志。此时请改用 `initial`、`latest` 或（对已有复制槽）`committed-offset`。<br/> `latest`: 从最新偏移量启动。 |
 | stop.mode                                 | Enum     | 否   | NEVER    | PostgreSQL CDC 消费者的可选停止模式。唯一有效的枚举值是 `never`：一旦进入增量阶段，数据源会持续读取 WAL 变更，不会自行停止。                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | snapshot.split.size                       | Integer  | 否   | 8096     | 表快照的拆分大小（行数），捕获的表在读取表快照时被拆分成多个拆分。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | snapshot.fetch.size                       | Integer  | 否   | 1024     | 读取表快照时每次轮询的最大获取大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| slot.name                                 | String   | 否   | seatunnel | PostgreSQL 逻辑解码槽名称。同一个 PostgreSQL 实例上如果有多个 CDC 任务，请为每个任务配置不同的 `slot.name`。                                                                                                                                                                                                                                                                                                                                                      |
-| heartbeat.interval.ms                     | Long     | 否   | 30000    | 发送心跳事件的间隔（毫秒），用于在捕获表空闲或事件被过滤时推进复制槽偏移。设为 `0` 可关闭。默认 `30000`（30 秒），与 Flink CDC 一致。未设置该一等选项时，仍可使用遗留的 `debezium.heartbeat.interval.ms`；两者同时配置时一等选项优先。数据库完全空闲时还需配置 `debezium.heartbeat.action.query`。 |
-| sslmode                                   | String   | 否   | -        | Debezium 复制连接使用的 PostgreSQL libpq `sslmode`。有效值：`disable`、`allow`、`prefer`、`require`、`verify-ca`、`verify-full`。未设置时，若 JDBC `url` 查询参数中包含 `sslmode` 则使用该值；否则不写入 `database.sslmode`，由 Debezium/pgjdbc 保持 `prefer`。                                                                                                                                                                                                                                                              |
-| publication.name                          | String   | 否   | -        | 用于 `pgoutput` 逻辑复制的 PostgreSQL publication 名称，对应 Debezium `publication.name`。未设置时不写入该属性。                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| publication.autocreate.mode               | String   | 否   | -        | publication 不存在时 Debezium 的创建方式。有效值：`disabled`、`filtered`、`all_tables`，对应 Debezium `publication.autocreate.mode`。未设置时不写入该属性，Debezium 保持 `all_tables`。                                                                                                                                                                                                                                                                                                                                                      |
+| slot.name                                 | String   | 否   | seatunnel | PostgreSQL 逻辑复制槽名称，用于记录当前任务的 WAL 消费进度并阻止数据库提前回收尚未消费的 WAL。同一个复制槽同一时刻只能被一个任务使用；若同一个 PostgreSQL 实例上有多个 CDC 任务（即使采集同一张表），也必须为每个任务配置不同的 `slot.name`。                                                                                                                                                                                                                                                                                                                                                      |
+| heartbeat.interval.ms                     | Long     | 否   | 30000    | 发送心跳事件的间隔（毫秒），默认 `30000`（30 秒），设为 `0` 表示关闭。当同库其他表有写入、但当前任务监控的表无写入时，心跳事件可推动复制槽消费位点（LSN）持续前进，防止 WAL 堆积。若整个数据库完全没有任何写入，还需配置 `debezium.heartbeat.action.query` 定期向心跳表写入数据。同时兼容 `debezium.heartbeat.interval.ms`，两者同时配置时以当前顶层参数为准。 |
+| sslmode                                   | String   | 否   | -        | 逻辑复制连接的 SSL 模式，可选值：`disable`、`allow`、`prefer`、`require`、`verify-ca`、`verify-full`。未配置时，若 JDBC `url` 查询参数中带有 `sslmode` 则自动沿用，否则默认为 `prefer`。                                                                                                                                                                                                                                                              |
+| publication.name                          | String   | 否   | -        | 使用 `pgoutput` 插件时的 PostgreSQL 发布（Publication）名称，未配置时默认为 `dbz_publication`。Publication 用于在数据库服务端定义允许逻辑复制输出的表名单（仅作表范围过滤，不记录消费进度）。仅当 `decoding.plugin.name = "pgoutput"`（默认）时生效。                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| publication.autocreate.mode               | String   | 否   | -        | 控制连接器如何创建或使用 `publication.name` 指定的发布（仅 `pgoutput` 插件生效，默认 `all_tables`）：<br/> `all_tables`：若发布不存在，自动执行 `CREATE PUBLICATION ... FOR ALL TABLES`（需要数据库 Superuser 权限），数据库会输出全库所有表的变更。<br/> `filtered`：若发布不存在，仅针对当前任务监控的表自动执行 `CREATE PUBLICATION ... FOR TABLE ...`（需要当前库 `CREATE` 权限及监控表的 Owner 权限），数据库仅输出监控表的变更。多个任务使用 `filtered` 时请配置不同的 `publication.name`，避免互相覆盖表清单。<br/> `disabled`：不自动创建或修改发布，直接使用数据库中已存在的 `publication.name`（不存在则报错）。适合生产环境由管理员预先建好 `FOR TABLE` 发布的最小权限场景；多个任务可安全共用同一个已包含所需表的发布。 |
 | decoding.plugin.name                      | String   | 否   | pgoutput | 安装在服务器上的 Postgres 逻辑解码插件的名称，支持的值有 decoderbufs、wal2json、wal2json_rds、wal2json_streaming、wal2json_rds_streaming 和 pgoutput。                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | server-time-zone                          | String   | 否   | UTC      | 数据库服务器中的会话时区。如果未设置，则使用 ZoneId.systemDefault() 来确定服务器时区。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | connect.timeout.ms                        | Duration | 否   | 30000    | 连接器在尝试连接到数据库服务器后应等待的最大时间，以防超时。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| connect.max-retries                       | Integer  | 否   | 3        | 连接器应重试建立数据库服务器连接的最大重试次数。同一有限预算也约束 WAL COPY 重连以及 JDBC probe 重连。预算耗尽后任务失败，错误中包含最后的 LSN 以及 attempt/max retries。默认值仍为 `3`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| connect.max-retries                       | Integer  | 否   | 3        | 建立数据库连接以及增量阶段连接闪断（逻辑复制流连接或 JDBC 连接断开）时的最大自动重连次数，默认值为 `3`。在增量阶段发生可恢复断连时，连接器会自动重建连接并从内存中最后处理的 LSN 位置继续读取；超过最大重试次数后任务失败退出。                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | connection.pool.size                      | Integer  | 否   | 20       | JDBC 连接池大小。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | chunk-key.even-distribution.factor.upper-bound | Double   | 否   | 100      | 块键分布因子的上限。此因子用于确定表数据是否均匀分布。如果计算出的分布因子小于或等于此上限（即 (MAX(id) - MIN(id) + 1) / 行数），则将优化表块以实现均匀分布。否则，如果分布因子更大，则将认为该表分布不均匀，并且如果估计的分片数量超过 `sample-sharding.threshold` 指定的值，则将使用基于采样的分片策略。默认值为 100.0。 |
 | chunk-key.even-distribution.factor.lower-bound | Double   | 否   | 0.05     | 块键分布因子的下限。此因子用于确定表数据是否均匀分布。如果计算出的分布因子大于或等于此下限（即 (MAX(id) - MIN(id) + 1) / 行数），则将优化表块以实现均匀分布。否则，如果分布因子更小，则将认为该表分布不均匀，并且如果估计的分片数量超过 `sample-sharding.threshold` 指定的值，则将使用基于采样的分片策略。默认值为 0.05。  |
@@ -135,16 +135,11 @@ ALTER TABLE your_table_name REPLICA IDENTITY FULL;
 
 > 支持多表读取
 
-```
-
-
+```hocon
 env {
-  # You can set engine configuration here
-  execution.parallelism = 1
+  parallelism = 1
   job.mode = "STREAMING"
   checkpoint.interval = 5000
-  read_limit.bytes_per_second=7000000
-  read_limit.rows_per_second=400
 }
 
 source {
@@ -154,29 +149,24 @@ source {
     password = "postgres"
     database-names = ["postgres_cdc"]
     table-names = ["postgres_cdc.inventory.postgres_cdc_table_1", "postgres_cdc.inventory.postgres_cdc_table_2"]
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
-    decoding.plugin.name = "decoderbufs"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     slot.name = "seatunnel_postgres_cdc"
   }
 }
 
 transform {
-
 }
 
 sink {
-  jdbc {
+  Jdbc {
     plugin_input = "customers_postgres_cdc"
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     driver = "org.postgresql.Driver"
     username = "postgres"
     password = "postgres"
-
     generate_sink_sql = true
-    # You need to configure both database and table
-    database = postgres_cdc
-    schema = "inventory"
-    tablePrefix = "sink_"
+    database = "postgres_cdc"
+    table = "inventory.sink_${table_name}"
     primary_keys = ["id"]
   }
 }
@@ -184,7 +174,7 @@ sink {
 
 ### ADD COLUMN Schema 演进
 
-PostgreSQL 不会把原始 `ALTER TABLE` SQL 文本写入逻辑复制流。使用 `pgoutput` 时，SeaTunnel 会从
+PostgreSQL 不会把原始 `ALTER TABLE` SQL 文本写入逻辑复制流。使用默认 `pgoutput` 插件时，SeaTunnel 会从
 RELATION 消息中检测变化后的表结构，在后续行事件之前发出 `ADD COLUMN` 事件，并更新下游表结构。
 因此，执行 DDL 后该表必须再发生一条行变更，连接器才能感知 Schema 变化。
 
@@ -205,7 +195,7 @@ source {
 
 ### 支持自定义表的主键
 
-```
+```hocon
 source {
   Postgres-CDC {
     plugin_output = "customers_postgres_cdc"
@@ -213,8 +203,7 @@ source {
     password = "postgres"
     database-names = ["postgres_cdc"]
     table-names = ["postgres_cdc.inventory.full_types_no_primary_key"]
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
-    decoding.plugin.name = "decoderbufs"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     exactly_once = true
     slot.name = "seatunnel_postgres_cdc"
     table-names-config = [
@@ -229,7 +218,13 @@ source {
 
 ### 配置 sslmode 与 publication
 
-请使用一等选项，而不是只把这些键放在 `debezium{}` 中。在云 RDS 上，优先使用内网地址并设置 `sslmode=disable`，同时预先创建 `FOR TABLE` publication。
+在云数据库（RDS）或权限受控的生产环境中，CDC 账号通常没有数据库 Superuser 权限，无法自动执行 `CREATE PUBLICATION ... FOR ALL TABLES`。此时可由管理员预先在 PostgreSQL 中按表创建发布：
+
+```sql
+CREATE PUBLICATION seatunnel_pub FOR TABLE inventory.postgres_cdc_table_1;
+```
+
+然后在任务中指定 `publication.name = "seatunnel_pub"` 与 `publication.autocreate.mode = "disabled"`；在专线或 VPC 内网环境下，可同时配置 `sslmode = "disable"`：
 
 ```hocon
 source {
@@ -238,7 +233,7 @@ source {
     password = "postgres"
     database-names = ["postgres_cdc"]
     table-names = ["postgres_cdc.inventory.postgres_cdc_table_1"]
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     slot.name = "seatunnel_postgres_cdc"
     sslmode = "disable"
     publication.name = "seatunnel_pub"
@@ -249,9 +244,10 @@ source {
 
 ### 配置 Debezium 心跳
 
-对于低流量表，Postgres 逻辑解码槽的位置只有在 WAL 中发生行变更时才会推进。请使用一等选项 `heartbeat.interval.ms`（默认 `30000`，与 Flink CDC 一致）在捕获事件被过滤时推进槽位偏移。设为 `0` 可关闭。未设置该一等选项时，遗留的 `debezium.heartbeat.interval.ms` 仍然生效。
+PostgreSQL 复制槽的消费位点只有在收到 WAL 事件时才会推进：
 
-数据库完全空闲时，还需配置 `debezium.heartbeat.action.query` 写入复制槽能够解码的行。心跳表必须提前在 Postgres 服务端创建。
+- **同库有其他表写入，但当前任务监控的表低频写入**：连接器默认开启 `heartbeat.interval.ms = 30000`（30 秒），会自动借助同库其他表的 WAL 事件定期推进复制槽位点，防止 WAL 堆积。如需关闭可设为 `0`。
+- **整个数据库长时间完全没有写入**：还需额外配置 `debezium.heartbeat.action.query`，定期向一张预先创建的心跳表写入数据以主动产生 WAL 事件（若使用 `publication.autocreate.mode = "disabled"` 或 `filtered`，请确保心跳表也包含在发布中）。
 
 ```hocon
 source {
@@ -259,10 +255,8 @@ source {
     username = "postgres"
     password = "postgres"
     database-names = ["postgres_cdc"]
-    schema-names = ["inventory"]
     table-names = ["postgres_cdc.inventory.postgres_cdc_table_1"]
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
-    decoding.plugin.name = "decoderbufs"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     slot.name = "seatunnel_postgres_cdc"
     heartbeat.interval.ms = 30000
     debezium {
@@ -288,10 +282,8 @@ source {
     username = "postgres"
     password = "postgres"
     database-names = ["postgres_cdc"]
-    schema-names = ["inventory"]
     table-names = ["postgres_cdc.inventory.postgres_cdc_table_1"]
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
-    decoding.plugin.name = "decoderbufs"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     slot.name = "seatunnel_postgres_cdc"
     startup.mode = "snapshot-only"
   }
@@ -299,13 +291,13 @@ source {
 
 sink {
   Jdbc {
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     driver = "org.postgresql.Driver"
     username = "postgres"
     password = "postgres"
     generate_sink_sql = true
-    database = postgres_cdc
-    table = inventory.sink_postgres_cdc_table_1
+    database = "postgres_cdc"
+    table = "inventory.sink_postgres_cdc_table_1"
     primary_keys = ["id"]
   }
 }
@@ -326,10 +318,8 @@ source {
     username = "postgres"
     password = "postgres"
     database-names = ["postgres_cdc"]
-    schema-names = ["inventory"]
     table-names = ["postgres_cdc.inventory.full_types_no_primary_key"]
-    url = "jdbc:postgresql://postgres_cdc_e2e:5432/postgres_cdc?loggerLevel=OFF"
-    decoding.plugin.name = "decoderbufs"
+    url = "jdbc:postgresql://localhost:5432/postgres_cdc"
     table-names-config = [
       {
         table = "postgres_cdc.inventory.full_types_no_primary_key"
@@ -380,10 +370,16 @@ CDC 用户需要具备 `REPLICATION` 角色以及对监控表的 `SELECT` 权限
 
 ```sql
 CREATE USER replication_user REPLICATION LOGIN PASSWORD 'password';
+GRANT USAGE ON SCHEMA public TO replication_user;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO replication_user;
 ```
 
-同时需要在 `postgresql.conf` 中设置 `wal_level = logical`，并在 `pg_hba.conf` 中添加允许该用户复制连接的条目。
+同时需要在 `postgresql.conf` 中设置 `wal_level = logical`，并在 `pg_hba.conf` 中允许该用户建立复制连接。
+
+若使用默认的 `pgoutput` 插件，还需根据 `publication.autocreate.mode` 注意发布（Publication）权限：
+- `disabled`（生产推荐，权限最小）：由管理员预先执行 `CREATE PUBLICATION <publication.name> FOR TABLE ...;`，CDC 用户无需额外建对象权限。
+- `filtered`：CDC 用户需要当前数据库的 `CREATE` 权限，且为监控表的 Owner。
+- `all_tables`（默认）：若目标发布不存在，CDC 用户需要 Superuser（或云数据库的 `rds_superuser`）权限以创建 `FOR ALL TABLES` 发布。
 
 ### 支持哪些逻辑解码插件？
 
@@ -397,16 +393,19 @@ SeaTunnel PostgreSQL CDC 支持 `pgoutput`（PostgreSQL 10 起内置）、`wal2j
 
 默认需要主键。如果表有可作为唯一标识的列，可以通过 `table-names-config` 中的 `primaryKeys` 字段自定义主键。
 
-### 复制槽如何管理？
+### 复制槽（Slot）与发布（Publication）有什么区别？如何管理？
 
-SeaTunnel 在任务启动时会创建或复用 `slot.name` 指定的复制槽。当 `startup.mode` 为
-`committed-offset` 时，复制槽必须已存在，因为 SeaTunnel 会使用其 `confirmed_flush_lsn`
-作为启动偏移量。未使用的复制槽会持续占用磁盘上的 WAL 段，导致 WAL 持续增长。当 CDC
-任务永久下线时，应在 PostgreSQL 侧手动删除不再使用的复制槽。
+- **复制槽（`slot.name`）**：记录单个 CDC 任务的 WAL 消费进度（LSN），并阻止 PostgreSQL 清理尚未消费的 WAL。
+  - **多个任务不能共用同一个复制槽**：即使多个 CDC 任务采集同一张表，也必须为每个任务配置不同的 `slot.name`（同一个复制槽同一时刻只能有一个活跃连接）。
+  - SeaTunnel 在任务启动时会自动创建或复用 `slot.name`（`startup.mode = committed-offset` 除外，该模式要求复制槽已存在且有已提交的 `confirmed_flush_lsn`）。
+  - 任务永久下线后，请务必在 PostgreSQL 侧手动删除不再使用的复制槽（`SELECT pg_drop_replication_slot('<slot.name>');`），否则未消费的复制槽会持续积压磁盘 WAL。
+- **发布（`publication.name`）**：仅在 `pgoutput` 插件下生效，用于在服务端定义“允许输出哪些表的变更”，**不记录消费进度**。
+  - 一张表可以同时包含在多个 Publication 中。
+  - 当配置 `publication.autocreate.mode = "disabled"` 时，多个 CDC 任务可以共用同一个已包含所需表的 `publication.name`；当配置为 `filtered` 时，请为每个任务配置不同的 `publication.name`，避免任务启动时互相修改同一个发布的表清单。
 
 ### 为什么 `startup.mode=earliest` 会因 WAL LSN 不可用而失败？
 
-`startup.mode=earliest` 请求的是 LSN `0/0`。这不是 Kafka `earliest`，也不是 MySQL `earliestBinlogOffset`。PostgreSQL 逻辑解码无法从已被回收的 LSN 或早于复制槽 `restart_lsn` 的位置启动。SeaTunnel 不会自动把起点钳制到 `restart_lsn`。若请求的 WAL 已不存在，任务会以 `POSTGRES-05` 失败，并提示对已有复制槽使用 `startup.mode=committed-offset`，或使用 `latest` / `initial`。
+`startup.mode=earliest` 会请求从最早的 WAL 位置（LSN `0/0`）开始读取。由于 PostgreSQL 逻辑复制只能消费尚未被清理、且不早于复制槽 `restart_lsn` 的 WAL 日志，如果目标 WAL 文件已被数据库回收，为避免静默跳过已丢失的历史数据，SeaTunnel 会直接报错退出（`POSTGRES-05`）。此时请根据业务需求改用 `initial`（全量快照 + 增量）、`latest`（从当前最新位置开始增量）或 `committed-offset`（从已有复制槽上次提交的位置继续）。
 
 ### 为什么任务报错 "replication slot ... has been invalidated"？
 

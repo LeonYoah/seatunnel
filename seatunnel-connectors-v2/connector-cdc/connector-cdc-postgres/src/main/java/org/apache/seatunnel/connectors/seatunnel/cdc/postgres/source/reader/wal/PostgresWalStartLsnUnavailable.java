@@ -27,7 +27,7 @@ import io.debezium.connector.postgresql.connection.Lsn;
  * LSN.
  *
  * <p>Does not clamp to {@code restart_lsn}. {@code startup.mode=earliest} still requests LSN {@code
- * 0/0}; that is not Kafka earliest and not MySQL {@code earliestBinlogOffset}.
+ * 0/0}.
  */
 public final class PostgresWalStartLsnUnavailable {
 
@@ -127,7 +127,7 @@ public final class PostgresWalStartLsnUnavailable {
                         + " for replication slot '"
                         + slotName
                         + "'. PostgreSQL cannot start logical decoding from a recycled LSN or from a position before the slot restart_lsn. "
-                        + "startup.mode=earliest requests LSN 0/0; it is NOT Kafka earliest and NOT MySQL earliestBinlogOffset. "
+                        + "startup.mode=earliest requests LSN 0/0. "
                         + "Use startup.mode=committed-offset with an existing slot, or latest / initial.";
         if (cause == null) {
             return new SeaTunnelRuntimeException(

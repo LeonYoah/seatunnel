@@ -66,33 +66,33 @@ public class PostgresIncrementalSourceOptions extends JdbcSourceOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "PostgreSQL libpq sslmode for the Debezium replication connection. "
+                            "SSL mode for the PostgreSQL logical replication connection. "
                                     + "Valid values: disable, allow, prefer, require, verify-ca, verify-full. "
-                                    + "If unset, sslmode is taken from the JDBC url query parameter when present; "
-                                    + "otherwise database.sslmode is left unset so Debezium/pgjdbc keep prefer.");
+                                    + "If unset, sslmode in the JDBC url query parameters is used when present; "
+                                    + "otherwise it defaults to prefer.");
 
     public static final Option<String> PUBLICATION_NAME =
             Options.key("publication.name")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The name of the PostgreSQL publication used for pgoutput logical replication. "
-                                    + "Maps to Debezium publication.name. If unset, the property is not written.");
+                            "The PostgreSQL publication name used for pgoutput logical replication "
+                                    + "(defaults to dbz_publication when unset).");
 
     public static final Option<Long> HEARTBEAT_INTERVAL_MS =
             Options.key("heartbeat.interval.ms")
                     .longType()
                     .defaultValue(Duration.ofSeconds(30).toMillis())
                     .withDescription(
-                            "The interval in milliseconds for sending heartbeat events to trace the latest available replication slot offsets. Set to 0 to disable. Default is 30000.");
+                            "The interval in milliseconds for sending heartbeat events to advance replication slot offsets. Set to 0 to disable. Default is 30000.");
 
     public static final Option<String> PUBLICATION_AUTOCREATE_MODE =
             Options.key("publication.autocreate.mode")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "How Debezium should create the publication when it does not exist. "
-                                    + "Valid values: disabled, filtered, all_tables. Maps to Debezium "
-                                    + "publication.autocreate.mode. If unset, the property is not written "
-                                    + "and Debezium keeps all_tables.");
+                            "Controls how the publication specified by publication.name is created when using pgoutput. "
+                                    + "Valid values: all_tables (default, creates FOR ALL TABLES), "
+                                    + "filtered (creates FOR TABLE for monitored tables only), "
+                                    + "disabled (uses an existing publication without creating or altering it).");
 }

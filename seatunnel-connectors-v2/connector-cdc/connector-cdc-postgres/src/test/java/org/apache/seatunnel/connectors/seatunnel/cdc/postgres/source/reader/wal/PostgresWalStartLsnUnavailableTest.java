@@ -69,8 +69,8 @@ public class PostgresWalStartLsnUnavailableTest {
         Assertions.assertTrue(exception.getMessage().contains("latest"));
         Assertions.assertTrue(exception.getMessage().contains("initial"));
         Assertions.assertTrue(exception.getMessage().contains("restart_lsn"));
-        Assertions.assertTrue(exception.getMessage().contains("NOT Kafka earliest"));
-        Assertions.assertTrue(exception.getMessage().contains("NOT MySQL earliestBinlogOffset"));
+        Assertions.assertTrue(
+                exception.getMessage().contains("startup.mode=earliest requests LSN 0/0"));
         Assertions.assertSame(cause, exception.getCause());
     }
 
