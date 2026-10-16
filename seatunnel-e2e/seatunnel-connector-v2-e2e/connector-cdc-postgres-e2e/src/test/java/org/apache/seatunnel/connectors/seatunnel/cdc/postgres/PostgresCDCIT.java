@@ -675,6 +675,76 @@ public class PostgresCDCIT extends TestSuiteBase implements TestResource {
         }
     }
 
+    /**
+     * {@code startup.mode=earliest} requests LSN 0/0. After the WAL for that LSN is gone the job
+     * must fail with committed-offset guidance and must not keep streaming from {@code
+     * restart_lsn}.
+     */
+    @TestTemplate
+    @DisabledOnContainer(
+            value = {},
+            type = {EngineType.SPARK, EngineType.FLINK},
+            disabledReason =
+                    "This case asserts a fail-stop earliest startup, which is currently only supported by the zeta engine.")
+    public void testEarliestFailsWhenRequestedWalIsGone(TestContainer container) throws Exception {
+        String slotName = createSlotName();
+        String slotVariable = toSlotVariable(slotName);
+        try {
+            clearTable(POSTGRESQL_SCHEMA, SOURCE_TABLE_1);
+            clearTable(POSTGRESQL_SCHEMA, SINK_TABLE_1);
+            createLogicalReplicationSlot(slotName);
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 80);
+            recycleWalUntilZeroSegmentGone();
+
+            CompletableFuture<Container.ExecResult> job =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                try {
+                                    return container.executeJob(
+                                            "/postgrescdc_to_postgres_earliest.conf",
+                                            Collections.singletonList(slotVariable));
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+            Container.ExecResult result = job.get(120, TimeUnit.SECONDS);
+            Assertions.assertNotEquals(
+                    0, result.getExitCode(), "earliest must fail-stop when WAL for 0/0 is gone");
+
+            String output =
+                    String.valueOf(result.getStdout())
+                            + String.valueOf(result.getStderr())
+                            + String.valueOf(container.getServerLogs());
+            Assertions.assertTrue(
+                    output.contains("committed-offset"),
+                    "Failure must mention committed-offset guidance, output=" + output);
+            Assertions.assertTrue(
+                    output.contains("0/0") || output.contains("requested LSN"),
+                    "Failure must mention requested LSN 0/0, output=" + output);
+            Assertions.assertTrue(
+                    output.contains(slotName),
+                    "Failure must mention slot name " + slotName + ", output=" + output);
+            Assertions.assertTrue(
+                    output.contains("latest") && output.contains("initial"),
+                    "Failure must mention latest / initial, output=" + output);
+
+            insertSourceTableRow(POSTGRESQL_SCHEMA, SOURCE_TABLE_1, 81);
+            TimeUnit.SECONDS.sleep(5);
+            Assertions.assertTrue(
+                    query(
+                                    "select * from "
+                                            + POSTGRESQL_SCHEMA
+                                            + "."
+                                            + SINK_TABLE_1
+                                            + " where id = 81")
+                            .isEmpty(),
+                    "Failed earliest job must not keep streaming from restart_lsn");
+        } finally {
+            clearTable(POSTGRESQL_SCHEMA, SOURCE_TABLE_1);
+            clearTable(POSTGRESQL_SCHEMA, SINK_TABLE_1);
+        }
+    }
+
     @TestTemplate
     @DisabledOnContainer(
             value = {},
@@ -1349,6 +1419,43 @@ public class PostgresCDCIT extends TestSuiteBase implements TestResource {
     private void assertJobHasNoAsyncFailure(CompletableFuture<Void> future) {
         if (future.isDone()) {
             future.join();
+        }
+    }
+
+    /**
+     * Generates WAL and checkpoints until the segment that would contain LSN 0/0 is gone.
+     *
+     * <p>PostgreSQL never stores a record at 0/0; recycling the first segment makes an earliest
+     * start fail instead of being silently rewritten to {@code restart_lsn}.
+     */
+    private void recycleWalUntilZeroSegmentGone() {
+        await().atMost(60, TimeUnit.SECONDS)
+                .pollInterval(1, TimeUnit.SECONDS)
+                .untilAsserted(
+                        () -> {
+                            executePostgresAdminSql(
+                                    "CREATE TABLE IF NOT EXISTS inventory.wal_recycle(id int)");
+                            executePostgresAdminSql(
+                                    "INSERT INTO inventory.wal_recycle SELECT generate_series(1, 200)");
+                            executePostgresAdminSql("SELECT pg_switch_wal()");
+                            executePostgresAdminSql("CHECKPOINT");
+                            Assertions.assertTrue(
+                                    isWalSegmentGone("0/0"),
+                                    "WAL segment for LSN 0/0 is still present");
+                        });
+    }
+
+    private boolean isWalSegmentGone(String lsn) {
+        return query("SELECT name FROM pg_ls_waldir() WHERE name = pg_walfile_name('" + lsn + "')")
+                .isEmpty();
+    }
+
+    private void executePostgresAdminSql(String sql) {
+        try (Connection connection = getJdbcConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to execute PostgreSQL admin SQL: " + sql, e);
         }
     }
 

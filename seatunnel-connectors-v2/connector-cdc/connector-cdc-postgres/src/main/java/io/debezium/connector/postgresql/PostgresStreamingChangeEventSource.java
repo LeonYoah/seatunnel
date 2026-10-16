@@ -17,6 +17,10 @@
 
 package io.debezium.connector.postgresql;
 
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.PostgresSourceFetchTaskContext;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.wal.PostgresWalStartLsnUnavailable;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader.wal.PostgresWalStreamRetryPolicy;
+
 import org.apache.kafka.connect.errors.ConnectException;
 
 import org.postgresql.core.BaseConnection;
@@ -75,7 +79,11 @@ public class PostgresStreamingChangeEventSource
 
     private final PostgresConnection connection;
     private final PostgresEventDispatcher<TableId> dispatcher;
+    // Retained to keep the Debezium constructor signature. Producer failures are rethrown
+    // so PostgresWalFetchTask can retry without poisoning ChangeEventQueue.
+    @SuppressWarnings("unused")
     private final ErrorHandler errorHandler;
+
     private final Clock clock;
     private final PostgresSchema schema;
     private final PostgresConnectorConfig connectorConfig;
@@ -85,6 +93,7 @@ public class PostgresStreamingChangeEventSource
     private final Snapshotter snapshotter;
     private final DelayStrategy pauseNoMessage;
     private final ElapsedTimeStrategy connectionProbeTimer;
+    private final Runnable onStreamHealthy;
 
     // Offset committing is an asynchronous operation.
     // When connector is restarted we cannot be sure about timing of recovery, offset committing
@@ -111,6 +120,30 @@ public class PostgresStreamingChangeEventSource
             PostgresSchema schema,
             PostgresTaskContext taskContext,
             ReplicationConnection replicationConnection) {
+        this(
+                connectorConfig,
+                snapshotter,
+                connection,
+                dispatcher,
+                errorHandler,
+                clock,
+                schema,
+                taskContext,
+                replicationConnection,
+                () -> {});
+    }
+
+    public PostgresStreamingChangeEventSource(
+            PostgresConnectorConfig connectorConfig,
+            Snapshotter snapshotter,
+            PostgresConnection connection,
+            PostgresEventDispatcher<TableId> dispatcher,
+            ErrorHandler errorHandler,
+            Clock clock,
+            PostgresSchema schema,
+            PostgresTaskContext taskContext,
+            ReplicationConnection replicationConnection,
+            Runnable onStreamHealthy) {
         this.connectorConfig = connectorConfig;
         this.connection = connection;
         this.dispatcher = dispatcher;
@@ -125,6 +158,7 @@ public class PostgresStreamingChangeEventSource
         this.connectionProbeTimer =
                 ElapsedTimeStrategy.constant(
                         Clock.system(), connectorConfig.statusUpdateInterval());
+        this.onStreamHealthy = onStreamHealthy != null ? onStreamHealthy : () -> {};
     }
 
     @Override
@@ -170,13 +204,30 @@ public class PostgresStreamingChangeEventSource
                                 ? offsetContext.lastCompletelyProcessedLsn()
                                 : offsetContext.lsn();
                 LOGGER.info("Retrieved latest position from stored offset '{}'", lsn);
-                walPosition =
-                        new WalPositionLocator(
-                                offsetContext.lastCommitLsn(),
-                                lsn,
-                                offsetContext.lastProcessedMessageType());
-                replicationStream.compareAndSet(
-                        null, replicationConnection.startStreaming(lsn, walPosition));
+                if (PostgresWalStartLsnUnavailable.isUnavailableStartLsn(lsn)) {
+                    // The LSN is the 0/0 sentinel written by startup.mode=earliest. Let
+                    // Debezium stream from the slot's current restart_lsn by passing no
+                    // explicit LSN argument. If PostgreSQL has already recycled the WAL for
+                    // that position, Debezium will throw "requested WAL segment has already
+                    // been removed", which PostgresWalFetchTask catches and wraps as
+                    // POSTGRES-05 with committed-offset guidance. Throwing here
+                    // unconditionally would make every earliest job fail at startup even
+                    // when the WAL is still available.
+                    LOGGER.info(
+                            "Stored offset is the earliest sentinel (LSN {}); streaming from slot restart_lsn",
+                            PostgresWalStartLsnUnavailable.formatLsn(lsn));
+                    walPosition = new WalPositionLocator();
+                    replicationStream.compareAndSet(
+                            null, replicationConnection.startStreaming(walPosition));
+                } else {
+                    walPosition =
+                            new WalPositionLocator(
+                                    offsetContext.lastCommitLsn(),
+                                    lsn,
+                                    offsetContext.lastProcessedMessageType());
+                    replicationStream.compareAndSet(
+                            null, replicationConnection.startStreaming(lsn, walPosition));
+                }
             } else {
                 LOGGER.info(
                         "No previous LSN found in Kafka, streaming from the latest xlogpos or flushed LSN...");
@@ -228,14 +279,23 @@ public class PostgresStreamingChangeEventSource
                                 KEEP_ALIVE_THREAD_NAME));
             }
             processMessages(context, partition, offsetContext, stream);
-        } catch (Throwable e) {
-            errorHandler.setProducerThrowable(e);
+        } catch (InterruptedException e) {
+            throw e;
+        } catch (Exception e) {
+            // Do not call errorHandler.setProducerThrowable(e). That also records
+            // queue.producerException(RetriableException), so IncrementalSourceStreamFetcher
+            // queue.poll() would fail the job even when PostgresWalFetchTask retries.
+            if (e instanceof RuntimeException) {
+                throw (RuntimeException) e;
+            }
+            throw new RuntimeException(e);
         } finally {
+            lsnFlushingAllowed = false;
+            ReplicationStream stream = replicationStream.getAndSet(null);
             if (replicationConnection != null) {
                 LOGGER.debug("stopping streaming...");
                 // stop the keep alive thread, this also shuts down the
                 // executor pool
-                ReplicationStream stream = replicationStream.get();
                 if (stream != null) {
                     stream.stopKeepAlive();
                 }
@@ -248,11 +308,14 @@ public class PostgresStreamingChangeEventSource
                     if (!isInPreSnapshotCatchUpStreaming(offsetContext)) {
                         connection.commit();
                     }
+                } catch (Exception e) {
+                    LOGGER.debug("Exception while committing the connection before close", e);
+                }
+                try {
                     replicationConnection.close();
                 } catch (Exception e) {
                     LOGGER.debug("Exception while closing the connection", e);
                 }
-                replicationStream.set(null);
             }
         }
     }
@@ -397,6 +460,7 @@ public class PostgresStreamingChangeEventSource
                 // for the snapshot, this block must not commit during catch up streaming.
                 connection.commit();
             }
+            onStreamHealthy.run();
         }
     }
 
@@ -433,8 +497,26 @@ public class PostgresStreamingChangeEventSource
         LOGGER.info("WAL resume position '{}' discovered", resumeLsn.get());
     }
 
+    /**
+     * Probes the JDBC data connection. On a retriable I/O failure, reconnects that same instance
+     * once and retries {@code SELECT 1}. If the probe is still dead, the exception is thrown so
+     * {@code PostgresWalFetchTask} can reopen both JDBC and the WAL COPY stream.
+     */
     private void probeConnectionIfNeeded() throws SQLException {
-        if (connectionProbeTimer.hasElapsed()) {
+        if (!connectionProbeTimer.hasElapsed()) {
+            return;
+        }
+        try {
+            connection.prepareQuery("SELECT 1");
+            connection.commit();
+        } catch (SQLException e) {
+            if (!PostgresWalStreamRetryPolicy.isRetriable(e)) {
+                throw e;
+            }
+            LOGGER.warn(
+                    "Postgres JDBC probe SELECT 1 failed with a retriable I/O error; reconnecting the JDBC data connection in-place once",
+                    e);
+            PostgresSourceFetchTaskContext.reopenJdbcDataConnection(connection);
             connection.prepareQuery("SELECT 1");
             connection.commit();
         }
@@ -488,6 +570,17 @@ public class PostgresStreamingChangeEventSource
 
     @Override
     public void commitOffset(Map<String, ?> offset) {
+        tryCommitOffset(offset);
+    }
+
+    /**
+     * Flushes the committed LSN to PostgreSQL when the replication stream is ready.
+     *
+     * @param offset offset map containing {@code LAST_COMMIT_LSN_KEY}
+     * @return {@code true} if the LSN was flushed to the replication stream; {@code false} if
+     *     ignored because streaming or LSN flushing is not yet active
+     */
+    public boolean tryCommitOffset(Map<String, ?> offset) {
         try {
             ReplicationStream replicationStream = this.replicationStream.get();
             final Lsn commitLsn =
@@ -505,7 +598,7 @@ public class PostgresStreamingChangeEventSource
                     LOGGER.info(
                             "Received offset commit request on '{}', but ignoring it. LSN flushing is not allowed yet",
                             lsn);
-                    return;
+                    return false;
                 }
 
                 if (LOGGER.isDebugEnabled()) {
@@ -514,10 +607,19 @@ public class PostgresStreamingChangeEventSource
                 // tell the server the point up to which we've processed data, so it can be free to
                 // recycle WAL segments
                 replicationStream.flushLsn(lsn);
+                return true;
             } else {
                 LOGGER.debug("Streaming has already stopped, ignoring commit callback...");
+                return false;
             }
         } catch (SQLException e) {
+            if (PostgresWalStreamRetryPolicy.isRetriable(e)) {
+                LOGGER.warn(
+                        "Failed to flush LSN '{}' because the replication stream is disconnected; will retry on a subsequent checkpoint",
+                        offset,
+                        e);
+                return false;
+            }
             throw new ConnectException(e);
         }
     }

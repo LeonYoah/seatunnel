@@ -25,7 +25,9 @@ public enum PostgresConnectorErrorCode implements SeaTunnelErrorCode {
     READ_COMMITTED_OFFSET_FAILED(
             "POSTGRES-03", "Failed to read the committed replication slot offset"),
     REPLICATION_SLOT_INVALIDATED(
-            "POSTGRES-04", "The replication slot has been invalidated by PostgreSQL");
+            "POSTGRES-04", "The replication slot has been invalidated by PostgreSQL"),
+    WAL_START_LSN_UNAVAILABLE(
+            "POSTGRES-05", "PostgreSQL cannot start logical decoding from the requested LSN");
     private final String code;
     private final String description;
 

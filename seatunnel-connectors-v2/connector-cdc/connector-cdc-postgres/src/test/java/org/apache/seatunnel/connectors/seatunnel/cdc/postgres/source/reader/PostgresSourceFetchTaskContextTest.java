@@ -22,6 +22,7 @@ import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.exception.Postgres
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.postgresql.PostgresConnectorConfig;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -102,6 +104,17 @@ public class PostgresSourceFetchTaskContextTest {
         Assertions.assertTrue(snapshotter.initialized);
         Assertions.assertNull(snapshotter.slotState);
         verify(dataConnection, never()).getReplicationSlotState(anyString(), anyString());
+    }
+
+    @Test
+    public void shouldReconnectJdbcDataConnectionInPlace() throws SQLException {
+        PostgresConnection dataConnection = mock(PostgresConnection.class);
+
+        PostgresSourceFetchTaskContext.reopenJdbcDataConnection(dataConnection);
+
+        InOrder order = inOrder(dataConnection);
+        order.verify(dataConnection).close();
+        order.verify(dataConnection).connect();
     }
 
     @Test
