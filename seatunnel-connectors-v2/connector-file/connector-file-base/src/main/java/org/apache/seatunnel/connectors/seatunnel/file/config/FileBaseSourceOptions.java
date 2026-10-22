@@ -56,6 +56,19 @@ public class FileBaseSourceOptions extends FileBaseOptions {
                     .noDefaultValue()
                     .withDescription("The string that represents a null value");
 
+    public static final Option<Boolean> CSV_BLANK_AS_NULL =
+            Options.key("csv_blank_as_null")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to treat blank fields as null when reading CSV files. "
+                                    + "A blank field is an empty string or contains only whitespace. "
+                                    + "If true, blank fields are read as null. "
+                                    + "If false, blank fields in string columns are kept as-is "
+                                    + "(empty strings and whitespace are preserved), while blank fields "
+                                    + "of other types are still read as null. "
+                                    + "Only valid when file_format_type is csv.");
+
     public static final Option<Boolean> PARSE_PARTITION_FROM_PATH =
             Options.key("parse_partition_from_path")
                     .booleanType()

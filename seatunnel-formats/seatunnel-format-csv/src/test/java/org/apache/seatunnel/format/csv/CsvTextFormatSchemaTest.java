@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -233,6 +234,47 @@ public class CsvTextFormatSchemaTest {
         row = new SeaTunnelRow(new Object[] {timestamp});
         assertEquals(
                 "2022-09-24 22:45:00.000123", new String(csvSerializationSchema.serialize(row)));
+    }
+
+    @Test
+    public void testCsvBlankAsNull() throws IOException {
+        SeaTunnelRowType rowType =
+                new SeaTunnelRowType(
+                        new String[] {"id", "name"},
+                        new SeaTunnelDataType[] {BasicType.INT_TYPE, BasicType.STRING_TYPE});
+
+        CsvDeserializationSchema defaultSchema =
+                CsvDeserializationSchema.builder()
+                        .seaTunnelRowType(rowType)
+                        .delimiter(",")
+                        .csvLineProcessor(new DefaultCsvLineProcessor())
+                        .build();
+        SeaTunnelRow defaultRow = defaultSchema.deserialize("1, ".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertNull(defaultRow.getField(1));
+
+        SeaTunnelRow defaultEmptyRow =
+                defaultSchema.deserialize("1,".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertNull(defaultEmptyRow.getField(1));
+
+        CsvDeserializationSchema preserveWhitespaceSchema =
+                CsvDeserializationSchema.builder()
+                        .seaTunnelRowType(rowType)
+                        .delimiter(",")
+                        .csvLineProcessor(new DefaultCsvLineProcessor())
+                        .blankAsNull(false)
+                        .build();
+        SeaTunnelRow preserveWhitespaceRow =
+                preserveWhitespaceSchema.deserialize("1, ".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertEquals(" ", preserveWhitespaceRow.getField(1));
+
+        SeaTunnelRow preserveEmptyRow =
+                preserveWhitespaceSchema.deserialize("1,".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertEquals("", preserveEmptyRow.getField(1));
+
+        SeaTunnelRow emptyIntRow =
+                preserveWhitespaceSchema.deserialize(",b".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertNull(emptyIntRow.getField(0));
+        Assertions.assertEquals("b", emptyIntRow.getField(1));
     }
 
     @Test

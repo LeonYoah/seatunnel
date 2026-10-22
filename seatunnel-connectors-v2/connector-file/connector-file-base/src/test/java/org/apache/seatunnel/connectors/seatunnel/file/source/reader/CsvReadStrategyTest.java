@@ -143,6 +143,32 @@ public class CsvReadStrategyTest {
     }
 
     @Test
+    public void testCsvBlankAsNull() throws Exception {
+        URL resource = CsvReadStrategyTest.class.getResource("/test-space.csv");
+        String path = Paths.get(resource.toURI()).toString();
+        CsvReadStrategy csvReadStrategy = new CsvReadStrategy();
+        LocalConf localConf = new LocalConf(FS_DEFAULT_NAME_DEFAULT);
+        csvReadStrategy.init(localConf);
+        csvReadStrategy.getFileNamesByPath(path);
+        csvReadStrategy.setPluginConfig(ConfigFactory.parseString("csv_blank_as_null = false"));
+        csvReadStrategy.setCatalogTable(
+                CatalogTableUtil.getCatalogTable(
+                        "test",
+                        new SeaTunnelRowType(
+                                new String[] {"id", "name", "age"},
+                                new SeaTunnelDataType[] {
+                                    BasicType.INT_TYPE, BasicType.STRING_TYPE, BasicType.INT_TYPE
+                                })));
+        TestCollector testCollector = new TestCollector();
+        csvReadStrategy.read(path, "", testCollector);
+
+        Assertions.assertEquals(3, testCollector.getRows().size());
+        Assertions.assertEquals(" ", testCollector.getRows().get(0).getField(1));
+        Assertions.assertEquals("b", testCollector.getRows().get(1).getField(1));
+        Assertions.assertEquals("", testCollector.getRows().get(2).getField(1));
+    }
+
+    @Test
     public void testUtf8BomCsvRead() throws Exception {
         CatalogTable catalogTable =
                 CatalogTableUtil.getCatalogTable(

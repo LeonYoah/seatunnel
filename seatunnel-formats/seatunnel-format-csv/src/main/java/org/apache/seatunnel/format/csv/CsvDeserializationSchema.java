@@ -26,6 +26,7 @@ import org.apache.seatunnel.api.table.type.MapType;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.api.table.type.SeaTunnelRowType;
+import org.apache.seatunnel.api.table.type.SqlType;
 import org.apache.seatunnel.common.exception.CommonError;
 import org.apache.seatunnel.common.exception.CommonErrorCode;
 import org.apache.seatunnel.common.utils.DateTimeUtils;
@@ -63,6 +64,7 @@ public class CsvDeserializationSchema implements Serializable {
     private final String[] separators;
     private final String encoding;
     private final String nullFormat;
+    private final boolean blankAsNull;
     private final CsvLineProcessor processor;
     private final CatalogTable catalogTable;
 
@@ -80,12 +82,14 @@ public class CsvDeserializationSchema implements Serializable {
             String[] separators,
             String encoding,
             String nullFormat,
+            boolean blankAsNull,
             CsvLineProcessor processor,
             CatalogTable catalogTable) {
         this.seaTunnelRowType = seaTunnelRowType;
         this.separators = separators;
         this.encoding = encoding;
         this.nullFormat = nullFormat;
+        this.blankAsNull = blankAsNull;
         this.processor = processor;
         this.catalogTable = catalogTable;
     }
@@ -104,6 +108,7 @@ public class CsvDeserializationSchema implements Serializable {
         private TimeUtils.Formatter timeFormatter = TimeUtils.Formatter.HH_MM_SS;
         private String encoding = StandardCharsets.UTF_8.name();
         private String nullFormat;
+        private boolean blankAsNull = true;
         private CsvLineProcessor csvLineProcessor = new DefaultCsvLineProcessor();
 
         private Builder() {}
@@ -153,6 +158,11 @@ public class CsvDeserializationSchema implements Serializable {
             return this;
         }
 
+        public Builder blankAsNull(boolean blankAsNull) {
+            this.blankAsNull = blankAsNull;
+            return this;
+        }
+
         public Builder csvLineProcessor(CsvLineProcessor csvLineProcessor) {
             this.csvLineProcessor = csvLineProcessor;
             return this;
@@ -164,6 +174,7 @@ public class CsvDeserializationSchema implements Serializable {
                     separators,
                     encoding,
                     nullFormat,
+                    blankAsNull,
                     csvLineProcessor,
                     catalogTable);
         }
@@ -183,7 +194,7 @@ public class CsvDeserializationSchema implements Serializable {
         Object[] objects = new Object[seaTunnelRowType.getTotalFields()];
         for (int i = 0; i < objects.length; i++) {
             String fieldValue = splitsMap.get(i);
-            if (StringUtils.isBlank(fieldValue)) {
+            if (shouldTreatAsNull(fieldValue, seaTunnelRowType.getFieldType(i))) {
                 continue;
             }
             if (StringUtils.equals(fieldValue, nullFormat)) {
@@ -226,9 +237,22 @@ public class CsvDeserializationSchema implements Serializable {
         return splitsMap;
     }
 
+    private boolean shouldTreatAsNull(String field, SeaTunnelDataType<?> fieldType) {
+        if (field == null) {
+            return true;
+        }
+        if (blankAsNull) {
+            return StringUtils.isBlank(field);
+        }
+        if (field.isEmpty()) {
+            return fieldType.getSqlType() != SqlType.STRING;
+        }
+        return false;
+    }
+
     private Object convert(
             String field, SeaTunnelDataType<?> fieldType, int level, String fieldName) {
-        if (StringUtils.isBlank(field)) {
+        if (shouldTreatAsNull(field, fieldType)) {
             return null;
         }
         switch (fieldType.getSqlType()) {
