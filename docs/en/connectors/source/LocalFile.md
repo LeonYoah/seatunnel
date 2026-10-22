@@ -78,6 +78,7 @@ If you use SeaTunnel Engine, It automatically integrated the hadoop jar when you
 | archive_compress_codec     | string  | no       | none                                 |
 | encoding                   | string  | no       | UTF-8                                |
 | null_format                | string  | no       | -                                    |
+| csv_blank_as_null          | boolean | no       | true                                 |
 | binary_chunk_size          | int     | no       | 1024                                 |
 | binary_complete_file_mode  | boolean | no       | false                                |
 | discovery_mode             | string  | no       | once                                 |
@@ -485,6 +486,10 @@ Only used when file_format_type is text.
 null_format to define which strings can be represented as null.
 
 e.g: `\N`
+
+### csv_blank_as_null [boolean]
+
+Only used when file_format_type is csv. Whether to treat blank fields as null. A blank field is an empty string or contains only whitespace. Default is `true`, which keeps the existing behavior. Set it to `false` to keep empty strings and whitespace-only fields as-is for string columns (a single space is read as a space, an empty field as `""`); blank fields of other types are still read as null.
 
 ### binary_chunk_size [int]
 

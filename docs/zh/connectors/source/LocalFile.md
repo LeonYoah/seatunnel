@@ -78,6 +78,7 @@ import ChangeLog from '../changelog/connector-file-local.md';
 | archive_compress_codec     | string  | 否    | none                |
 | encoding                   | string  | 否    | UTF-8               |
 | null_format                | string  | 否    | -                   |
+| csv_blank_as_null          | boolean | 否    | true                |
 | binary_chunk_size          | int     | 否    | 1024                |
 | binary_complete_file_mode  | boolean | 否    | false               |
 | discovery_mode             | string  | 否    | once                |
@@ -485,6 +486,10 @@ abc.*
 null_format 定义哪些字符串可以表示为 null。
 
 例如：`\N`
+
+### csv_blank_as_null [boolean]
+
+仅在 file_format_type 为 csv 时使用。读取 CSV 时是否把空字段当作 null；空字段指空字符串或仅包含空白字符的字段。默认 `true`，保持现有行为；设置为 `false` 时，字符串列中的空字符串和纯空白字段按原样保留（例如单个空格读成空格，空字段读成 `""`），非字符串列的空字段仍按 null 处理。
 
 ### binary_chunk_size [int]
 

@@ -258,7 +258,8 @@ public class CsvReadStrategy extends AbstractReadStrategy {
                         .nullFormat(
                                 readonlyConfig
                                         .getOptional(FileBaseSourceOptions.NULL_FORMAT)
-                                        .orElse(null));
+                                        .orElse(null))
+                        .blankAsNull(readonlyConfig.get(FileBaseSourceOptions.CSV_BLANK_AS_NULL));
         if (isMergePartition) {
             deserializationSchema =
                     builder.seaTunnelRowType(this.seaTunnelRowTypeWithPartition).build();
@@ -292,7 +293,8 @@ public class CsvReadStrategy extends AbstractReadStrategy {
                         .nullFormat(
                                 readonlyConfig
                                         .getOptional(FileBaseSourceOptions.NULL_FORMAT)
-                                        .orElse(null));
+                                        .orElse(null))
+                        .blankAsNull(readonlyConfig.get(FileBaseSourceOptions.CSV_BLANK_AS_NULL));
         if (pluginConfig.hasPath(FileBaseSourceOptions.CSV_USE_HEADER_LINE.key())) {
             firstLineAsHeader =
                     pluginConfig.getBoolean(FileBaseSourceOptions.CSV_USE_HEADER_LINE.key());
