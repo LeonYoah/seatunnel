@@ -150,7 +150,8 @@ public class CsvReadStrategyTest {
         URL resource = CsvReadStrategyTest.class.getResource("/test-space.csv");
         String path = Paths.get(resource.toURI()).toString();
         CsvReadStrategy csvReadStrategy = new CsvReadStrategy();
-        LocalConf localConf = new LocalConf(FS_DEFAULT_NAME_DEFAULT);
+        LocalFileSystemConf.LocalConf localConf =
+                new LocalFileSystemConf.LocalConf(FS_DEFAULT_NAME_DEFAULT);
         csvReadStrategy.init(localConf);
         csvReadStrategy.getFileNamesByPath(path);
         csvReadStrategy.setPluginConfig(ConfigFactory.parseString("csv_blank_as_null = false"));
