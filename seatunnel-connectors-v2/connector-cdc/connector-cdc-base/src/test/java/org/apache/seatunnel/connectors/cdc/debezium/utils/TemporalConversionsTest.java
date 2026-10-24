@@ -28,7 +28,7 @@ import java.time.format.DateTimeParseException;
 public class TemporalConversionsTest {
 
     @Test
-    public void parsesUtcZonedTimestampOnJava8() {
+    public void parsesUtcZonedTimestamp() {
         LocalDateTime value =
                 TemporalConversions.toLocalDateTime("2022-10-30T01:34:56.007890Z", ZoneOffset.UTC);
 
@@ -63,5 +63,25 @@ public class TemporalConversionsTest {
                                         "2022-10-30T01:34:56", ZoneOffset.UTC));
 
         Assertions.assertTrue(error.getMessage().contains("2022-10-30T01:34:56"));
+    }
+
+    /**
+     * Documents the capability gap vs {@code FLEXIBLE_OFFSET_FORMATTER}: strict {@code
+     * ISO_OFFSET_DATE_TIME} rejects space separators and compact {@code +0800}. Hour-only {@code
+     * +08} is accepted by {@code ISO_OFFSET_DATE_TIME} on current JDKs; space / {@code +0800} stay
+     * on the TIMESTAMP_TZ FLEXIBLE fallback only. Do not unify in this change.
+     */
+    @Test
+    public void documentsIsoOffsetVersusFlexibleFormatterGap() {
+        Assertions.assertThrows(
+                DateTimeParseException.class,
+                () -> TemporalConversions.parseDebeziumTimestamp("2024-01-01 12:00:00+08:00"));
+        Assertions.assertThrows(
+                DateTimeParseException.class,
+                () -> TemporalConversions.parseDebeziumTimestamp("2024-01-01T12:00:00+0800"));
+        // Hour-only +08 is accepted by ISO_OFFSET_DATE_TIME (not a gap vs FLEXIBLE).
+        Assertions.assertEquals(
+                Instant.parse("2024-01-01T04:00:00Z"),
+                TemporalConversions.parseDebeziumTimestamp("2024-01-01T12:00:00+08"));
     }
 }

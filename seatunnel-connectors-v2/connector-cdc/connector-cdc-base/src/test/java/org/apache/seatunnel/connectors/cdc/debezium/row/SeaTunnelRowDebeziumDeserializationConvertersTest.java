@@ -19,6 +19,7 @@ package org.apache.seatunnel.connectors.cdc.debezium.row;
 
 import org.apache.seatunnel.api.table.type.ArrayType;
 import org.apache.seatunnel.api.table.type.BasicType;
+import org.apache.seatunnel.api.table.type.LocalTimeType;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.api.table.type.SeaTunnelRowType;
@@ -38,6 +39,7 @@ import io.debezium.data.geometry.Geography;
 import io.debezium.data.geometry.Geometry;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -261,5 +263,141 @@ public class SeaTunnelRowDebeziumDeserializationConvertersTest {
                 () ->
                         SeaTunnelRowDebeziumDeserializationConverters.parseOffsetDateTimeFromString(
                                 "not-a-timestamp", ZoneId.systemDefault()));
+    }
+
+    /**
+     * P0: TIMESTAMP_TZ ({@link LocalTimeType#OFFSET_DATE_TIME_TYPE}) string path with numeric
+     * offset and {@code Z}. Step 1 of {@code parseOffsetDateTimeFromString} already accepts these
+     * on current {@code dev}; asserts the wired converter returns UTC OffsetDateTime.
+     */
+    @Test
+    void testTimestampTzConverterAcceptsNumericOffsetAndZ() throws Exception {
+        ZoneId serverTz = ZoneOffset.UTC;
+        SeaTunnelRowDebeziumDeserializationConverters converters =
+                new SeaTunnelRowDebeziumDeserializationConverters(
+                        new SeaTunnelRowType(
+                                new String[] {"tsz"},
+                                new SeaTunnelDataType[] {LocalTimeType.OFFSET_DATE_TIME_TYPE}),
+                        new MetadataConverter[] {},
+                        serverTz,
+                        DebeziumDeserializationConverterFactory.DEFAULT);
+
+        Schema fieldSchema =
+                SchemaBuilder.string().optional().name("io.debezium.time.ZonedTimestamp").build();
+        Schema recordSchema = SchemaBuilder.struct().field("tsz", fieldSchema).build();
+
+        Struct withOffset = new Struct(recordSchema);
+        withOffset.put("tsz", "2022-10-30T01:34:56.007890-05:00");
+        SourceRecord offsetRecord =
+                new SourceRecord(
+                        new HashMap<>(),
+                        new HashMap<>(),
+                        "topic",
+                        null,
+                        SchemaBuilder.int32().build(),
+                        1,
+                        recordSchema,
+                        withOffset,
+                        null,
+                        new ArrayList<>());
+        SeaTunnelRow offsetRow = converters.convert(offsetRecord, withOffset, recordSchema);
+        Assertions.assertEquals(
+                OffsetDateTime.parse("2022-10-30T06:34:56.007890Z"), offsetRow.getField(0));
+
+        Struct withZ = new Struct(recordSchema);
+        withZ.put("tsz", "2022-10-30T01:34:56.007890Z");
+        SourceRecord zRecord =
+                new SourceRecord(
+                        new HashMap<>(),
+                        new HashMap<>(),
+                        "topic",
+                        null,
+                        SchemaBuilder.int32().build(),
+                        1,
+                        recordSchema,
+                        withZ,
+                        null,
+                        new ArrayList<>());
+        SeaTunnelRow zRow = converters.convert(zRecord, withZ, recordSchema);
+        Assertions.assertEquals(
+                OffsetDateTime.parse("2022-10-30T01:34:56.007890Z"), zRow.getField(0));
+    }
+
+    /**
+     * P0 regression: TIMESTAMP ({@link LocalTimeType#LOCAL_DATE_TIME_TYPE}) with a Debezium
+     * ZonedTimestamp-style string. This path uses {@code convertToTimestamp} → {@link
+     * org.apache.seatunnel.connectors.cdc.debezium.utils.TemporalConversions#toLocalDateTime},
+     * which previously called {@code Instant.parse} (Z-only) and failed on numeric offsets.
+     */
+    @Test
+    void testTimestampConverterAcceptsZonedTimestampStringWithOffset() throws Exception {
+        ZoneId serverTz = ZoneOffset.UTC;
+        SeaTunnelRowDebeziumDeserializationConverters converters =
+                new SeaTunnelRowDebeziumDeserializationConverters(
+                        new SeaTunnelRowType(
+                                new String[] {"ts"},
+                                new SeaTunnelDataType[] {LocalTimeType.LOCAL_DATE_TIME_TYPE}),
+                        new MetadataConverter[] {},
+                        serverTz,
+                        DebeziumDeserializationConverterFactory.DEFAULT);
+
+        Schema fieldSchema =
+                SchemaBuilder.string().optional().name("io.debezium.time.ZonedTimestamp").build();
+        Schema recordSchema = SchemaBuilder.struct().field("ts", fieldSchema).build();
+
+        Struct withOffset = new Struct(recordSchema);
+        withOffset.put("ts", "2022-10-30T01:34:56.007890-05:00");
+        SourceRecord offsetRecord =
+                new SourceRecord(
+                        new HashMap<>(),
+                        new HashMap<>(),
+                        "topic",
+                        null,
+                        SchemaBuilder.int32().build(),
+                        1,
+                        recordSchema,
+                        withOffset,
+                        null,
+                        new ArrayList<>());
+        SeaTunnelRow offsetRow = converters.convert(offsetRecord, withOffset, recordSchema);
+        Assertions.assertEquals(
+                LocalDateTime.parse("2022-10-30T06:34:56.007890"), offsetRow.getField(0));
+
+        Struct withZ = new Struct(recordSchema);
+        withZ.put("ts", "2022-10-30T01:34:56.007890Z");
+        SourceRecord zRecord =
+                new SourceRecord(
+                        new HashMap<>(),
+                        new HashMap<>(),
+                        "topic",
+                        null,
+                        SchemaBuilder.int32().build(),
+                        1,
+                        recordSchema,
+                        withZ,
+                        null,
+                        new ArrayList<>());
+        SeaTunnelRow zRow = converters.convert(zRecord, withZ, recordSchema);
+        Assertions.assertEquals(
+                LocalDateTime.parse("2022-10-30T01:34:56.007890"), zRow.getField(0));
+    }
+
+    /**
+     * P1: documents that TIMESTAMP_TZ flexible path accepts space separators / short {@code +08},
+     * while TemporalConversions.parseDebeziumTimestamp (strict ISO_OFFSET_DATE_TIME) does not.
+     * Behavior is intentional; do not unify in this PR.
+     */
+    @Test
+    void testTimestampTzFlexibleFormatsStillAcceptedOnFallbackChain() {
+        ZoneId serverTz = ZoneId.of("UTC");
+        OffsetDateTime expected = Instant.parse("2024-01-01T04:00:00Z").atOffset(ZoneOffset.UTC);
+        Assertions.assertEquals(
+                expected,
+                SeaTunnelRowDebeziumDeserializationConverters.parseOffsetDateTimeFromString(
+                        "2024-01-01 12:00:00+08:00", serverTz));
+        Assertions.assertEquals(
+                expected,
+                SeaTunnelRowDebeziumDeserializationConverters.parseOffsetDateTimeFromString(
+                        "2024-01-01T12:00:00+08", serverTz));
     }
 }

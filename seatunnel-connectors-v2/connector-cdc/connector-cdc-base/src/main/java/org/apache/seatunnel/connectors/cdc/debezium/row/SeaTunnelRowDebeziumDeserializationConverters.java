@@ -451,8 +451,8 @@ public class SeaTunnelRowDebeziumDeserializationConverters implements Serializab
      *       {@code 2024-01-01 12:00:00+08:00} or {@code 2024-01-01T12:00:00+08}
      *   <li>{@link TemporalConversions#parseDebeziumTimestamp(String)} — UTC epoch literal or
      *       numeric offset, e.g. {@code 2024-01-01T12:00:00Z} or {@code
-     *       2022-10-30T01:34:56.007890-05:00}. JDK 8 {@link java.time.Instant#parse} accepts only
-     *       {@code Z}.
+     *       2022-10-30T01:34:56.007890-05:00}. {@link java.time.Instant#parse} accepts only {@code
+     *       Z}; this step is for formats that reached here after earlier parsers failed.
      * </ol>
      *
      * If all attempts fail, an {@link IllegalArgumentException} is thrown with the raw value
@@ -560,25 +560,6 @@ public class SeaTunnelRowDebeziumDeserializationConverters implements Serializab
         LocalDate localDate = LocalDate.ofEpochDay(date);
         LocalTime localTime = LocalTime.ofNanoOfDay(nanoOfDay);
         return LocalDateTime.of(localDate, localTime);
-    }
-
-    private static DebeziumDeserializationConverter convertToLocalTimeZoneTimestamp(
-            ZoneId serverTimeZone) {
-        return new DebeziumDeserializationConverter() {
-            private static final long serialVersionUID = 1L;
-
-            @Override
-            public Object convert(Object dbzObj, Schema schema) {
-                if (dbzObj instanceof String) {
-                    return TemporalConversions.toLocalDateTime(dbzObj, serverTimeZone);
-                }
-                throw new IllegalArgumentException(
-                        "Unable to convert to LocalDateTime from unexpected value '"
-                                + dbzObj
-                                + "' of type "
-                                + dbzObj.getClass().getName());
-            }
-        };
     }
 
     private static DebeziumDeserializationConverter convertToString() {

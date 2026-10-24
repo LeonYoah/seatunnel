@@ -160,9 +160,11 @@ public final class TemporalConversions {
      * Parses a Debezium timestamp string that ends in {@code Z} or a numeric offset such as {@code
      * -05:00}.
      *
-     * <p>JDK 8 {@link Instant#parse(CharSequence)} accepts only {@code Z}. Oracle {@code TIMESTAMP
-     * WITH TIME ZONE} is emitted by Debezium as a {@code ZonedTimestamp} with the session offset,
-     * so {@code -05:00} must be accepted here. A value with no offset still fails.
+     * <p>{@link Instant#parse(CharSequence)} accepts only {@code Z}. Oracle {@code TIMESTAMP WITH
+     * TIME ZONE} is emitted by Debezium as a {@code ZonedTimestamp} with the session offset, so
+     * {@code -05:00} must be accepted here. A value with no offset still fails. Uses strict {@link
+     * DateTimeFormatter#ISO_OFFSET_DATE_TIME} only (rejects space date/time separators and compact
+     * offsets such as {@code +0800}; those remain on the TIMESTAMP_TZ FLEXIBLE fallback path).
      *
      * @param value raw Debezium timestamp text
      * @return the same instant
