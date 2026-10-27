@@ -35,13 +35,17 @@ master is started. A new application can restore from a durable checkpoint.
 | Secrets and ConfigMaps | Reference existing objects, which SeaTunnel never creates or deletes, or let it create owned ones; every mounted key declares its full path and uses `subPath` |
 | Environment | Per-variable `kubernetes.env.*` and whole-object `envFrom`, sourced from literals, Secrets or ConfigMaps |
 | Runtime files | Engine, Hazelcast, JVM-options and Log4j2 file selection, each of which can be disabled |
+| Conf directory | Optional `kubernetes.conf-dir` packages first-level files into an owned ConfigMap mounted over `<seatunnel-home>/config` |
+| Master HTTP | Follows `seatunnel.yaml`; declares an `http` container/Service port when enabled and bound; workers keep HTTP off |
 | Scheduling | Namespace, ServiceAccount, image pull Secrets, labels, annotations, node selectors and tolerations |
 | Storage and recovery | Checkpoint PVC mount and recovery of an earlier job through `application.restore-job-id` |
 | Lifecycle | Worker loss or master exit fails the application; `cancel` removes every owned resource and keeps referenced ones; finished Jobs are retained for `kubernetes.finished-job-retention-seconds` |
 
 :::note
 Not in this release: HA master failover, worker replacement or autoscaling, arbitrary Pod templates,
-affinity/PriorityClass, Kerberos and REST/HTTPS. A failed application can be resumed from its last
+affinity/PriorityClass, Kerberos, Ingress, and a separate HTTP Service. Master HTTP follows
+`seatunnel.yaml` (`enable-http` / `port` / `context-path`); use the headless Service with
+`kubectl port-forward` when it is enabled. A failed application can be resumed from its last
 durable checkpoint with `application.restore-job-id`.
 :::
 

@@ -35,13 +35,17 @@ Master 或任意 Worker 丢失都会使当前 Job 失败。系统不会自动补
 | Secret 与 ConfigMap | 可引用已有对象（SeaTunnel 永不创建或删除），也可由 SeaTunnel 创建并持有；每个挂载 key 都声明完整路径并使用 `subPath` |
 | 环境变量 | 逐变量的 `kubernetes.env.*` 与整对象的 `envFrom`，取值可来自字面量、Secret 或 ConfigMap |
 | 运行时文件 | 引擎、Hazelcast、JVM 参数、Log4j2 文件均可指定，也可禁用 |
+| 配置目录 | 可选 `kubernetes.conf-dir`，将首层文件打包为自有 ConfigMap，并整目录挂载覆盖 `<seatunnel-home>/config` |
+| Master HTTP | 跟随 `seatunnel.yaml`；启用且端口已绑定时声明 `http` container/Service 端口；Worker 仍强制关闭 HTTP |
 | 调度 | Namespace、ServiceAccount、镜像拉取 Secret、labels、annotations、node selector、tolerations |
 | 存储与恢复 | 挂载 checkpoint PVC，并通过 `application.restore-job-id` 恢复之前的作业 |
 | 生命周期 | Worker 丢失或 Master 退出都会使 application 失败；`cancel` 删除全部自有资源、保留引用资源；完成的 Job 保留 `kubernetes.finished-job-retention-seconds` |
 
 :::note
 本版本不支持：Master 高可用切换、Worker 自动补建或弹性伸缩、任意 Pod template、
-affinity/PriorityClass、Kerberos、REST/HTTPS。失败的 application 可用 `application.restore-job-id`
+affinity/PriorityClass、Kerberos、Ingress，以及单独的 HTTP Service。Master 的 HTTP 跟随
+`seatunnel.yaml`（`enable-http` / `port` / `context-path`）；启用后可通过 headless Service 做
+`kubectl port-forward`。失败的 application 可用 `application.restore-job-id`
 从最近的持久化 checkpoint 恢复。
 :::
 

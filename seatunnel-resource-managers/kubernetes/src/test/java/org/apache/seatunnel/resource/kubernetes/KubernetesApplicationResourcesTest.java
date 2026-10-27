@@ -45,6 +45,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import io.kubernetes.client.openapi.models.V1ConfigMap;
+import org.apache.seatunnel.resource.kubernetes.kubeclient.ConfDirFiles;
+import io.kubernetes.client.openapi.models.V1ContainerPort;
 import io.kubernetes.client.openapi.models.V1EnvFromSource;
 import io.kubernetes.client.openapi.models.V1EnvVar;
 import io.kubernetes.client.openapi.models.V1Job;
@@ -359,6 +361,156 @@ class KubernetesApplicationResourcesTest {
         // PID 1 is the JVM itself, so a process probe cannot fail before the container exits.
         assertNull(worker.getSpec().getContainers().get(0).getLivenessProbe());
     }
+
+
+    @Test
+    void packagesConfDirIntoImmutableConfigMapAndMountsConfigDirectory() throws Exception {
+        Path confDir = temporary.resolve("myconf");
+        Files.createDirectories(confDir);
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 18080\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        Files.write(
+                confDir.resolve("hive-site.xml"),
+                "<configuration/>".getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-conf", mainClass, parameters);
+        KubernetesConfigMap confMap =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesConfigMap)
+                        .map(KubernetesConfigMap.class::cast)
+                        .filter(
+                                map ->
+                                        ConfDirFiles.configMapName("app-conf")
+                                                .equals(map.getName()))
+                        .findFirst()
+                        .orElseThrow();
+        V1ConfigMap model = confMap.getInternalResource();
+        assertEquals(Boolean.TRUE, model.getImmutable());
+        assertTrue(model.getData().containsKey("seatunnel.yaml"));
+        assertTrue(model.getData().containsKey("hive-site.xml"));
+
+        V1Job job = applicationJob(application).getInternalResource();
+        V1VolumeMount mount = mount(job, KubernetesConstants.CONF_DIR_VOLUME);
+        assertEquals("/opt/seatunnel/config", mount.getMountPath());
+        assertNull(mount.getSubPath());
+        boolean hasEnv =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                        .anyMatch(
+                                env ->
+                                        KubernetesConstants.SEATUNNEL_CONF_DIR_ENV.equals(
+                                                        env.getName())
+                                                && "/opt/seatunnel/config".equals(env.getValue()));
+        assertTrue(hasEnv);
+        // Worker assembly reuses ConfDirDecorator.decorate(); covered separately where Mockito works.
+    }
+
+    @Test
+    void rejectsConfDirConflictWithConfigMapMountIntoConfig() throws Exception {
+        Path confDir = temporary.resolve("conflict-conf");
+        Files.createDirectories(confDir);
+        Files.write(confDir.resolve("seatunnel.yaml"), "seatunnel: {}\n".getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        options.put("kubernetes.configmap.engine.data.seatunnel.yaml", "seatunnel: {}\n");
+        options.put(
+                "kubernetes.configmap.engine.mount.seatunnel.yaml",
+                "/opt/seatunnel/config/seatunnel.yaml");
+        IllegalArgumentException failure =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                KubernetesApplicationConfig.from(
+                                        specification(),
+                                        ReadonlyConfig.fromMap(new HashMap<>(options))));
+        assertTrue(failure.getMessage().contains("kubernetes.conf-dir"));
+        assertTrue(failure.getMessage().contains("conflicts"));
+    }
+
+    @Test
+    void declaresHttpContainerAndServicePortsWhenEnabled() throws Exception {
+        Path confDir = temporary.resolve("http-on");
+        Files.createDirectories(confDir);
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 18080\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        assertEquals(18080, parameters.httpContainerPort());
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-http", mainClass, parameters);
+        V1Job job = applicationJob(application).getInternalResource();
+        List<V1ContainerPort> ports =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getPorts();
+        assertTrue(
+                ports.stream()
+                        .anyMatch(
+                                port ->
+                                        KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())
+                                                && Integer.valueOf(18080)
+                                                        .equals(port.getContainerPort())));
+        V1Service service =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesService)
+                        .map(KubernetesService.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getInternalResource();
+        assertTrue(
+                service.getSpec().getPorts().stream()
+                        .anyMatch(
+                                port ->
+                                        KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())
+                                                && Integer.valueOf(18080).equals(port.getPort())));
+    }
+
+    @Test
+    void omitsHttpPortsWhenDisabled() throws Exception {
+        Path confDir = temporary.resolve("http-off");
+        Files.createDirectories(confDir);
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: false\n      port: 8080\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        assertNull(parameters.httpContainerPort());
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-http-off", mainClass, parameters);
+        V1Job job = applicationJob(application).getInternalResource();
+        List<V1ContainerPort> ports =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getPorts();
+        assertTrue(ports == null || ports.isEmpty());
+        V1Service service =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesService)
+                        .map(KubernetesService.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getInternalResource();
+        assertTrue(
+                service.getSpec().getPorts().stream()
+                        .noneMatch(
+                                port ->
+                                        KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())));
+    }
+
 
     private static ApplicationSpecification specification() {
         return SeatunnelApplicationConfig.parse("env { job.mode = BATCH }", options());
