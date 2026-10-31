@@ -26,6 +26,7 @@ import org.apache.seatunnel.engine.server.resourcemanager.ResourceEventHandler;
 import org.apache.seatunnel.resource.kubernetes.cli.SeatunnelKubernetesApplicationCli;
 import org.apache.seatunnel.resource.kubernetes.config.KubernetesApplicationConfig;
 import org.apache.seatunnel.resource.kubernetes.config.KubernetesOptions;
+import org.apache.seatunnel.resource.kubernetes.kubeclient.ConfDirFiles;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesClient;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesConstants;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesResourceIdentity;
@@ -1702,6 +1703,152 @@ class KubernetesApplicationResourcesTest {
         assertEquals(
                 "platform,batch",
                 KubernetesApplicationConfig.read(encoded).getWorkerAnnotations().get("team"));
+    }
+
+    @Test
+    void packagesConfDirIntoImmutableConfigMapAndMountsConfigDirectory() throws Exception {
+        Path confDir = temporary.resolve("myconf");
+        Files.createDirectories(confDir);
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 18080\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        Files.write(
+                confDir.resolve("hive-site.xml"),
+                "<configuration/>".getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-conf", mainClass, parameters);
+        KubernetesConfigMap confMap =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesConfigMap)
+                        .map(KubernetesConfigMap.class::cast)
+                        .filter(map -> ConfDirFiles.configMapName("app-conf").equals(map.getName()))
+                        .findFirst()
+                        .orElseThrow();
+        V1ConfigMap model = confMap.getInternalResource();
+        assertEquals(Boolean.TRUE, model.getImmutable());
+        assertTrue(model.getData().containsKey("seatunnel.yaml"));
+        assertTrue(model.getData().containsKey("hive-site.xml"));
+
+        V1Job job = applicationJob(application).getInternalResource();
+        V1VolumeMount mount = mount(job, KubernetesConstants.CONF_DIR_VOLUME);
+        assertEquals("/opt/seatunnel/config", mount.getMountPath());
+        assertNull(mount.getSubPath());
+        boolean hasEnv =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                        .anyMatch(
+                                env ->
+                                        KubernetesConstants.SEATUNNEL_CONF_DIR_ENV.equals(
+                                                        env.getName())
+                                                && "/opt/seatunnel/config".equals(env.getValue()));
+        assertTrue(hasEnv);
+    }
+
+    @Test
+    void mountsConfDirOnWorkerPods() throws Exception {
+        Path confDir = temporary.resolve("worker-conf");
+        Files.createDirectories(confDir);
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                "seatunnel: {}\n".getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-worker-conf", mainClass, parameters);
+        KubernetesJob job = applicationJob(application);
+        // Localized master spec carries the conf-dir mount marker for workers.
+        StringWriter writer = new StringWriter();
+        parameters.write(writer);
+        String encoded =
+                Base64.getEncoder()
+                        .encodeToString(writer.toString().getBytes(StandardCharsets.UTF_8));
+        KubernetesApplicationConfig localized = KubernetesApplicationConfig.read(encoded);
+        assertTrue(localized.isConfDirEnabled());
+        KubernetesPod worker =
+                workerPod(
+                        job,
+                        "app-worker-conf-worker-0",
+                        localized,
+                        specification().getWorkerSpecification(),
+                        "cluster",
+                        "app-worker-conf:5801");
+        V1Pod pod = worker.getInternalResource();
+        assertTrue(
+                pod.getSpec().getVolumes().stream()
+                        .anyMatch(
+                                volume ->
+                                        KubernetesConstants.CONF_DIR_VOLUME.equals(volume.getName())
+                                                && ConfDirFiles.configMapName("app-worker-conf")
+                                                        .equals(volume.getConfigMap().getName())));
+        assertTrue(
+                pod.getSpec().getContainers().get(0).getVolumeMounts().stream()
+                        .anyMatch(
+                                mount ->
+                                        KubernetesConstants.CONF_DIR_VOLUME.equals(mount.getName())
+                                                && "/opt/seatunnel/config"
+                                                        .equals(mount.getMountPath())
+                                                && Boolean.TRUE.equals(mount.getReadOnly())));
+        assertTrue(
+                pod.getSpec().getContainers().get(0).getEnv().stream()
+                        .anyMatch(
+                                env ->
+                                        KubernetesConstants.SEATUNNEL_CONF_DIR_ENV.equals(
+                                                        env.getName())
+                                                && "/opt/seatunnel/config".equals(env.getValue())));
+    }
+
+    @Test
+    void rejectsConfDirConflictWithConfigMapMountIntoConfig() throws Exception {
+        Path confDir = temporary.resolve("conflict-conf");
+        Files.createDirectories(confDir);
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                "seatunnel: {}\n".getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        options.put("kubernetes.configmap.engine.data.seatunnel.yaml", "seatunnel: {}\n");
+        options.put(
+                "kubernetes.configmap.engine.mount.seatunnel.yaml",
+                "/opt/seatunnel/config/seatunnel.yaml");
+        IllegalArgumentException failure =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                KubernetesApplicationConfig.from(
+                                        specification(),
+                                        ReadonlyConfig.fromMap(new HashMap<>(options))));
+        assertTrue(failure.getMessage().contains("kubernetes.conf-dir"));
+        assertTrue(failure.getMessage().contains("conflicts"));
+    }
+
+    @Test
+    void rejectsConfDirWhenPayloadExceedsMaxSize() throws Exception {
+        Path confDir = temporary.resolve("oversized-conf");
+        Files.createDirectories(confDir);
+        Files.write(confDir.resolve("big.txt"), ("x".repeat(100)).getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(KubernetesOptions.CONF_DIR.key(), confDir.toString());
+        options.put(KubernetesOptions.CONFIGMAP_MAX_SIZE.key(), "20");
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        IllegalArgumentException failure =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                KubernetesApplicationClusterDescriptor.assembleApplication(
+                                        "app-oversize", mainClass, parameters));
+        assertTrue(failure.getMessage().contains("kubernetes.configmap.max-size"));
     }
 
     private static List<String> masterCommand(KubernetesApplicationConfig parameters) {

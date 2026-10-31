@@ -28,6 +28,7 @@ import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesClient;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesConstants;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesResourceIdentity;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.PodWatchCallback;
+import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.ConfDirDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.ConfigMapDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.EnvironmentDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.KubernetesStepDecorator;
@@ -255,7 +256,8 @@ public final class KubernetesResourceManagerDriver
                 Arrays.asList(
                         new EnvironmentDecorator(parameters),
                         new SecretDecorator(job.getName(), parameters),
-                        new ConfigMapDecorator(job.getName(), parameters));
+                        new ConfigMapDecorator(job.getName(), parameters),
+                        new ConfDirDecorator(job.getName(), parameters));
         for (KubernetesStepDecorator decorator : decorators) {
             pod = decorator.decorate(pod);
         }

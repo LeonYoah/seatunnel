@@ -57,6 +57,8 @@ Command-line overrides (`-Dkey=value`) may be visible to other users on the subm
 | `kubernetes.worker.jvm-options-file` | string | no | `jvm_worker_options` | Worker JVM options file, using the same forms as the master option. |
 | `kubernetes.jvm-options-file` | string | no | `jvm_options` | Common JVM options file applied to master and workers before the role-specific file; `disabled` passes no common argument file. |
 | `kubernetes.log4j-config-file` | string | no | `log4j2_client.properties` | Log4j2 configuration passed as `-Dlog4j2.configurationFile`: a file name under `<seatunnel-home>/config` or an absolute path. The default keeps console logs; set `log4j2.properties` for the file-based server configuration. |
+| `kubernetes.conf-dir` | string | no | - | Local directory of first-level files packaged into an owned ConfigMap (`<application-id>-conf-map`) and mounted over `<seatunnel-home>/config` on master and workers. Covers image defaults; missing files are the user's responsibility. Do not combine with `kubernetes.configmap.*.mount` into the same `config/` path. |
+| `kubernetes.configmap.max-size` | long | no | `1048576` | Maximum total size in UTF-8 bytes of files packaged from `kubernetes.conf-dir` (sum of key bytes + value bytes per entry). Default and maximum are 1048576 (1 MiB). Exceeding the limit fails submission. |
 | `kubernetes.seatunnel-config-file` | string | no | `config/seatunnel.yaml` | Engine configuration passed as `-Dseatunnel.config`: a path relative to `<seatunnel-home>` or an absolute `.yaml`/`.yml` path. |
 | `kubernetes.master.labels` | map | no | - | Additional master Pod labels as comma-separated `key:value` pairs. SeaTunnel ownership labels are reserved. |
 | `kubernetes.worker.labels` | map | no | - | Additional worker Pod labels as comma-separated `key:value` pairs. SeaTunnel ownership labels are reserved. |
@@ -282,6 +284,50 @@ kubernetes {
 Keep connector credentials out of ConfigMaps: they are not confidential. Use a Secret with
 `kubernetes.env`/`${VAR}` when the job needs them.
 :::
+
+## Whole-directory configuration (`kubernetes.conf-dir`)
+
+Set `kubernetes.conf-dir` only when you want to package and mount a local configuration directory
+(aligned with Spark `SPARK_CONF_DIR`). Default image configuration is unchanged when the option is
+unset.
+
+```bash
+bin/seatunnel-application.sh submit -t kubernetes -a kubernetes.conf \
+  -Dkubernetes.conf-dir=/path/to/myconf
+```
+
+Put first-level files only under `/path/to/myconf` (no recursion), for example:
+
+- `seatunnel.yaml`
+- `log4j2_client.properties` / `log4j2.properties`
+- `jvm_options` / `jvm_master_options` / `jvm_worker_options`
+- `hive-site.xml`
+- `metrics.properties`
+
+Filtering mirrors Spark: skip `gz|zip|jar|tar` and `*.template`, skip non-UTF-8 with a warning, keep
+every other first-level file (including yaml/properties such as `seatunnel.yaml` and
+`hive-site.xml`). Size accounting uses UTF-8 byte length of each ConfigMap key plus value (closer to
+the etcd object limit than Spark's `String.length` character count). If the packaged payload would
+exceed `kubernetes.configmap.max-size` (default/max 1048576), submission **fails fast** instead of
+silently omitting files that would leave a half-hidden mount. The ConfigMap is immutable, owned by
+the application Job, named `<application-id>-conf-map`, and mounted over `<seatunnel-home>/config`
+with `SEATUNNEL_CONF_DIR` set. That mount **covers/hides** the image default `config/` directory;
+any file you omit is not available from the image.
+
+:::caution
+Do not also use `kubernetes.configmap.<entry>.(ref|data|mount)` with a `mount` under the same
+`<seatunnel-home>/config` path. SeaTunnel fails submission with a clear error when the two
+conflict. Prefer whole-dir **or** single-file subPath overrides, not both on the same path.
+:::
+
+**Single-file override (subPath) remains available** without `kubernetes.conf-dir`:
+
+```hocon
+kubernetes.configmap.engine-config {
+  ref = platform-engine-config
+  mount.seatunnel.yaml = /opt/seatunnel/config/seatunnel.yaml
+}
+```
 
 ## ConfigMaps and runtime files
 

@@ -128,6 +128,8 @@ public final class KubernetesApplicationConfig {
     private final Map<String, String> workerNodeSelector;
     private final List<KubernetesToleration> masterTolerations;
     private final List<KubernetesToleration> workerTolerations;
+    private final String confDir;
+    private final long configMapMaxSize;
 
     private KubernetesApplicationConfig(
             ApplicationSpecification specification, ReadonlyConfig options) {
@@ -185,6 +187,9 @@ public final class KubernetesApplicationConfig {
                 KubernetesToleration.parse(
                         KubernetesOptions.WORKER_TOLERATIONS.key(),
                         options.get(KubernetesOptions.WORKER_TOLERATIONS));
+        this.confDir = resolveConfDir(options);
+        this.configMapMaxSize = resolveConfigMapMaxSize(options);
+        validateConfDirConflicts();
     }
 
     /**
@@ -384,6 +389,11 @@ public final class KubernetesApplicationConfig {
                             : KubernetesConstants.ENV_FROM_CONFIGMAP,
                     reference.getName());
         }
+        if (confDir != null) {
+            properties.setProperty(KubernetesOptions.CONF_DIR.key(), CONF_DIR_MOUNTED);
+        }
+        properties.setProperty(
+                KubernetesOptions.CONFIGMAP_MAX_SIZE.key(), Long.toString(configMapMaxSize));
         writeConfigMaps(properties);
         if (checkpointPvc != null) {
             properties.setProperty(KubernetesOptions.CHECKPOINT_PVC.key(), checkpointPvc);
@@ -533,9 +543,11 @@ public final class KubernetesApplicationConfig {
         Map<String, String> createdNames = new LinkedHashMap<>();
         Map<String, Map<String, String>> data = new LinkedHashMap<>();
         Map<String, Map<String, String>> mounts = new LinkedHashMap<>();
+        Set<String> declared = OptionUtil.getDeclaredOptionKeys(KubernetesOptions.class);
         for (Map.Entry<String, String> option : options.entrySet()) {
             String key = option.getKey();
-            if (!key.startsWith(KubernetesConstants.CONFIG_MAP_PREFIX)) {
+            if (!key.startsWith(KubernetesConstants.CONFIG_MAP_PREFIX) || declared.contains(key)) {
+                // Skip declared options such as kubernetes.configmap.max-size.
                 continue;
             }
             String remainder = key.substring(KubernetesConstants.CONFIG_MAP_PREFIX.length());
@@ -675,6 +687,75 @@ public final class KubernetesApplicationConfig {
             for (Map.Entry<String, String> mount : configMap.getMountPaths().entrySet()) {
                 properties.setProperty(
                         prefix + "." + SECTION_MOUNT + "." + mount.getKey(), mount.getValue());
+            }
+        }
+    }
+
+    /** @return whether {@code kubernetes.conf-dir} was set for this application */
+    public boolean isConfDirEnabled() {
+        return confDir != null;
+    }
+
+    /** Absolute container path of the distribution config directory covered by conf-dir. */
+    public String confDirectory() {
+        return seatunnelHome.endsWith("/") ? seatunnelHome + "config" : seatunnelHome + "/config";
+    }
+
+    /**
+     * Marker written into the localized specification so workers mount conf-dir without the
+     * submitter path.
+     */
+    static final String CONF_DIR_MOUNTED = "__mounted__";
+
+    private static String resolveConfDir(ReadonlyConfig options) {
+        String value = options.get(KubernetesOptions.CONF_DIR);
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        if (CONF_DIR_MOUNTED.equals(value)) {
+            return value;
+        }
+        Path path = Paths.get(value);
+        if (!Files.isDirectory(path)) {
+            throw new IllegalArgumentException(
+                    KubernetesOptions.CONF_DIR.key() + " must be an existing directory: " + value);
+        }
+        return value;
+    }
+
+    private static long resolveConfigMapMaxSize(ReadonlyConfig options) {
+        Long value = options.get(KubernetesOptions.CONFIGMAP_MAX_SIZE);
+        long size = value == null ? KubernetesConstants.CONFIG_MAP_MAX_SIZE_DEFAULT : value;
+        if (size < 1 || size > KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT) {
+            throw new IllegalArgumentException(
+                    KubernetesOptions.CONFIGMAP_MAX_SIZE.key()
+                            + " must be between 1 and "
+                            + KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT);
+        }
+        return size;
+    }
+
+    private void validateConfDirConflicts() {
+        if (confDir == null) {
+            return;
+        }
+        String covered = confDirectory();
+        for (KubernetesConfigMapEntry entry : configMaps) {
+            for (String path : entry.getMountPaths().values()) {
+                if (path.equals(covered)
+                        || path.startsWith(covered + "/")
+                        || covered.startsWith(path + "/")) {
+                    throw new IllegalArgumentException(
+                            KubernetesOptions.CONF_DIR.key()
+                                    + " mounts the whole directory "
+                                    + covered
+                                    + " and conflicts with "
+                                    + KubernetesConstants.CONFIG_MAP_OPTION
+                                    + " mount path "
+                                    + path
+                                    + "; use either kubernetes.conf-dir or a single-file "
+                                    + "configmap.*.mount into the same path, not both");
+                }
             }
         }
     }
