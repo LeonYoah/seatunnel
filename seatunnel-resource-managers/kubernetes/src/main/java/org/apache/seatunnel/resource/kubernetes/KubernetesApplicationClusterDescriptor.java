@@ -108,6 +108,7 @@ final class KubernetesApplicationClusterDescriptor implements ClusterDescriptor<
             api.createAccompanyingResources(job, application);
             log.debug("Starting Job {}", id);
             api.startJob(job.getName());
+            logHttpAccess(id, parameters);
             return job.getName();
         } catch (Exception failure) {
             log.warn("Kubernetes application {} deployment failed", id, failure);
@@ -450,6 +451,34 @@ final class KubernetesApplicationClusterDescriptor implements ClusterDescriptor<
     public void cancelApplication(String applicationId) throws Exception {
         validateApplicationId(applicationId);
         api.deleteApplication(applicationId);
+    }
+
+    private static void logHttpAccess(String id, KubernetesApplicationConfig parameters) {
+        Integer httpPort = parameters.httpContainerPort();
+        if (httpPort == null) {
+            return;
+        }
+        String namespace = parameters.getNamespace();
+        String contextPath = parameters.getHttpContextPath();
+        String context = contextPath == null ? "" : contextPath;
+        String inCluster = String.format("http://%s.%s.svc:%d%s", id, namespace, httpPort, context);
+        log.info("SeaTunnel REST endpoint (in-cluster): {}", inCluster);
+        log.info(
+                "Access from a local machine: kubectl -n {} port-forward svc/{} {}:{}",
+                namespace,
+                id,
+                httpPort,
+                httpPort);
+        System.out.println("REST (in-cluster): " + inCluster);
+        System.out.println(
+                "Port-forward: kubectl -n "
+                        + namespace
+                        + " port-forward svc/"
+                        + id
+                        + " "
+                        + httpPort
+                        + ":"
+                        + httpPort);
     }
 
     /** Releases the SDK connection without canceling or deleting any application. */

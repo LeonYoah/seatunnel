@@ -283,6 +283,33 @@ Keep connector credentials out of ConfigMaps: they are not confidential. Use a S
 `kubernetes.env`/`${VAR}` when the job needs them.
 :::
 
+## Master HTTP (seatunnel.yaml)
+
+Application mode no longer force-disables HTTP on the master. Whether REST is enabled, which port
+it binds, and the context path all come from the `seatunnel.yaml` that the master loads
+(`enable-http`, `port`, `context-path`) — including a file selected by
+`kubernetes.seatunnel-config-file` or an owned ConfigMap whose `mount` path matches that file.
+Workers still force HTTP and HTTPS off.
+
+When `enable-http=true` and `port` is a positive bound port, SeaTunnel declares a container port
+named `http` on the master and adds the same-named port to the existing headless Service. Port
+`0` / unbound is not declared. There is no Ingress and no separate ClusterIP Service in this
+release.
+
+After submit, the client prints the in-cluster URL and a `kubectl port-forward` hint:
+
+```bash
+# example when application id is demo-batch-abc123def456 and port is 8080
+kubectl -n seatunnel-apps port-forward svc/demo-batch-abc123def456 8080:8080
+# then open http://127.0.0.1:8080/
+```
+
+:::note
+Enabling HTTP with the distribution default `seatunnel.yaml` also exposes job-management REST such
+as `/submit-job`. Tightening that surface for application mode is left to a later community change.
+Auth settings are unchanged by this feature.
+:::
+
 ## ConfigMaps and runtime files
 
 Every `kubernetes.configmap.<entry>` entry mounts one or more files through `subPath` in both the

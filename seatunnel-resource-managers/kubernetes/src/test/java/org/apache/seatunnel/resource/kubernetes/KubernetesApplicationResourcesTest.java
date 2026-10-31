@@ -45,6 +45,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import io.kubernetes.client.openapi.models.V1ConfigMap;
+import io.kubernetes.client.openapi.models.V1ContainerPort;
 import io.kubernetes.client.openapi.models.V1EnvFromSource;
 import io.kubernetes.client.openapi.models.V1EnvVar;
 import io.kubernetes.client.openapi.models.V1Job;
@@ -1702,6 +1703,97 @@ class KubernetesApplicationResourcesTest {
         assertEquals(
                 "platform,batch",
                 KubernetesApplicationConfig.read(encoded).getWorkerAnnotations().get("team"));
+    }
+
+    @Test
+    void declaresHttpContainerAndServicePortsWhenEnabledViaSeatunnelConfigFile() throws Exception {
+        Path yaml = temporary.resolve("http-on.yaml");
+        Files.write(
+                yaml,
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 18080\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(
+                KubernetesOptions.SEATUNNEL_CONFIG_FILE.key(), yaml.toAbsolutePath().toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        assertEquals(18080, parameters.httpContainerPort());
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-http", mainClass, parameters);
+        V1Job job = applicationJob(application).getInternalResource();
+        List<V1ContainerPort> ports =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getPorts();
+        assertTrue(
+                ports.stream()
+                        .anyMatch(
+                                port ->
+                                        KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())
+                                                && Integer.valueOf(18080)
+                                                        .equals(port.getContainerPort())));
+        V1Service service =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesService)
+                        .map(KubernetesService.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getInternalResource();
+        assertTrue(
+                service.getSpec().getPorts().stream()
+                        .anyMatch(
+                                port ->
+                                        KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())
+                                                && Integer.valueOf(18080).equals(port.getPort())));
+    }
+
+    @Test
+    void omitsHttpPortsWhenDisabledViaSeatunnelConfigFile() throws Exception {
+        Path yaml = temporary.resolve("http-off.yaml");
+        Files.write(
+                yaml,
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: false\n      port: 8080\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        Map<String, String> options = options();
+        options.put(
+                KubernetesOptions.SEATUNNEL_CONFIG_FILE.key(), yaml.toAbsolutePath().toString());
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        assertNull(parameters.httpContainerPort());
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-http-off", mainClass, parameters);
+        V1Job job = applicationJob(application).getInternalResource();
+        List<V1ContainerPort> ports =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getPorts();
+        assertTrue(ports == null || ports.isEmpty());
+        V1Service service =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesService)
+                        .map(KubernetesService.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getInternalResource();
+        assertTrue(
+                service.getSpec().getPorts().stream()
+                        .noneMatch(
+                                port -> KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())));
+    }
+
+    @Test
+    void resolvesHttpFromOwnedConfigMapDataMountedOntoSeatunnelConfigPath() throws Exception {
+        Map<String, String> options = options();
+        options.put(
+                "kubernetes.configmap.engine.data.seatunnel.yaml",
+                "seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 19090\n");
+        options.put(
+                "kubernetes.configmap.engine.mount.seatunnel.yaml",
+                "/opt/seatunnel/config/seatunnel.yaml");
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
+        assertEquals(19090, parameters.httpContainerPort());
     }
 
     private static List<String> masterCommand(KubernetesApplicationConfig parameters) {
