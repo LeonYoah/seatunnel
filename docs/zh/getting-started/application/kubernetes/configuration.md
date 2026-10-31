@@ -268,6 +268,29 @@ kubernetes {
 `${VAR}` 注入。
 :::
 
+## Master HTTP（seatunnel.yaml）
+
+Application 模式不再在 Master 上强制关闭 HTTP。是否启用 REST、端口与 context-path 均来自 Master
+加载的 `seatunnel.yaml`（`enable-http` / `port` / `context-path`），也包括通过
+`kubernetes.seatunnel-config-file` 指定的文件，或挂载路径与之匹配的自有 ConfigMap 数据。
+Worker 仍强制关闭 HTTP 与 HTTPS。
+
+当 `enable-http=true` 且 `port` 为正的绑定端口时，SeaTunnel 在 Master 上声明名为 `http` 的
+containerPort，并在已有 headless Service 上添加同名端口。端口为 `0`/未绑定则不声明。本版本不提供
+Ingress，也不创建单独的 ClusterIP Service。
+
+提交成功后，客户端会打印集群内 URL 与 `kubectl port-forward` 提示：
+
+```bash
+kubectl -n seatunnel-apps port-forward svc/<application-id> 8080:8080
+# 然后访问 http://127.0.0.1:8080/
+```
+
+:::note
+使用发行包默认 `seatunnel.yaml` 启用 HTTP 后，作业管理 REST（例如 `/submit-job`）也会可用。
+收紧 application 模式下的 REST 面留给社区后续处理。认证相关配置不在本变更范围内。
+:::
+
 ## ConfigMap 与运行时文件
 
 每个 `kubernetes.configmap.<entry>` 条目都会在 Master 和 Worker Pod 中按 `subPath` 挂载一个或

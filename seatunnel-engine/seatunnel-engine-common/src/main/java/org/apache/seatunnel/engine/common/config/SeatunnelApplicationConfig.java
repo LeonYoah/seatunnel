@@ -306,10 +306,13 @@ public final class SeatunnelApplicationConfig {
         ConnectorJarStorageConfig jars = new ConnectorJarStorageConfig();
         jars.setEnable(false);
         config.getEngineConfig().setConnectorJarStorageConfig(jars);
-        HttpConfig http = new HttpConfig();
-        http.setEnabled(false);
-        http.setEnableHttps(false);
-        config.getEngineConfig().setHttpConfig(http);
+        // Master keeps seatunnel.yaml HTTP settings. Workers never expose REST.
+        if (worker) {
+            HttpConfig http = new HttpConfig();
+            http.setEnabled(false);
+            http.setEnableHttps(false);
+            config.getEngineConfig().setHttpConfig(http);
+        }
         SlotServiceConfig slotConfig = new SlotServiceConfig();
         slotConfig.setDynamicSlot(false);
         slotConfig.setSlotNum(slots);

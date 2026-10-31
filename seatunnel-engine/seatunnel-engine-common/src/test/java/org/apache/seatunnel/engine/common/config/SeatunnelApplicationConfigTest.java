@@ -206,4 +206,20 @@ class SeatunnelApplicationConfigTest {
                 IllegalArgumentException.class,
                 () -> SeatunnelApplicationConfig.configure(config, "app", "", 1));
     }
+
+    @Test
+    void masterKeepsHttpFromYamlWhileWorkerForceDisables() {
+        SeaTunnelConfig master = new SeaTunnelConfig();
+        master.getEngineConfig().getHttpConfig().setEnabled(true);
+        master.getEngineConfig().getHttpConfig().setPort(18080);
+        SeatunnelApplicationConfig.configure(master, "unique-application", null, 2);
+        assertTrue(master.getEngineConfig().getHttpConfig().isEnabled());
+        assertEquals(18080, master.getEngineConfig().getHttpConfig().getPort());
+
+        SeaTunnelConfig worker = new SeaTunnelConfig();
+        worker.getEngineConfig().getHttpConfig().setEnabled(true);
+        SeatunnelApplicationConfig.configure(worker, "unique-application", "master:5801", 3);
+        assertFalse(worker.getEngineConfig().getHttpConfig().isEnabled());
+        assertFalse(worker.getEngineConfig().getHttpConfig().isEnableHttps());
+    }
 }
