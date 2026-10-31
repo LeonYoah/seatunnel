@@ -37,6 +37,7 @@ import org.apache.seatunnel.resource.kubernetes.exception.KubernetesClientExcept
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesClient;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesConstants;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesResourceIdentity;
+import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.ConfDirDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.ConfigMapDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.EnvironmentDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.HeadlessServiceDecorator;
@@ -146,6 +147,7 @@ final class KubernetesApplicationClusterDescriptor implements ClusterDescriptor<
                         new EnvironmentDecorator(parameters),
                         new SecretDecorator(id, parameters),
                         new ConfigMapDecorator(id, parameters),
+                        new ConfDirDecorator(id, parameters),
                         new HeadlessServiceDecorator(id, parameters));
         List<KubernetesResource<?>> resources = new ArrayList<>();
         for (KubernetesStepDecorator decorator : decorators) {

@@ -21,7 +21,7 @@ set -euo pipefail
 APPLICATION_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export SEATUNNEL_HOME="${APPLICATION_HOME}"
 
-CONF_DIR="${APPLICATION_HOME}/config"
+CONF_DIR="${SEATUNNEL_CONF_DIR:-${APPLICATION_HOME}/config}"
 APP_JAR="${APPLICATION_HOME}/starter/seatunnel-starter.jar"
 APP_MAIN="org.apache.seatunnel.core.starter.seatunnel.SeaTunnelApplication"
 

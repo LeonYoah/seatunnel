@@ -35,6 +35,7 @@ Master 或任意 Worker 丢失都会使当前 Job 失败。系统不会自动补
 | Secret 与 ConfigMap | 可引用已有对象（SeaTunnel 永不创建或删除），也可由 SeaTunnel 创建并持有；每个挂载 key 都声明完整路径并使用 `subPath` |
 | 环境变量 | 逐变量的 `kubernetes.env.*` 与整对象的 `envFrom`，取值可来自字面量、Secret 或 ConfigMap |
 | 运行时文件 | 引擎、Hazelcast、JVM 参数、Log4j2 文件均可指定，也可禁用 |
+| 配置目录 | 可选 `kubernetes.conf-dir`：将首层文件打包到自有 ConfigMap，并整目录挂载覆盖 `<seatunnel-home>/config` |
 | 调度 | Namespace、ServiceAccount、镜像拉取 Secret、labels、annotations、node selector、tolerations |
 | 存储与恢复 | 挂载 checkpoint PVC，并通过 `application.restore-job-id` 恢复之前的作业 |
 | 生命周期 | Worker 丢失或 Master 退出都会使 application 失败；`cancel` 删除全部自有资源、保留引用资源；完成的 Job 保留 `kubernetes.finished-job-retention-seconds` |

@@ -201,6 +201,25 @@ public final class KubernetesOptions {
                             "Existing persistent volume claim mounted on the master at "
                                     + "/opt/seatunnel/checkpoints; never deleted by application "
                                     + "cleanup.");
+    public static final Option<String> CONF_DIR =
+            Options.key("kubernetes.conf-dir")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Local directory whose first-level files are packaged into an owned "
+                                    + "ConfigMap and mounted over <seatunnel-home>/config on master "
+                                    + "and workers; unset keeps the image configuration.");
+    public static final Option<Long> CONFIGMAP_MAX_SIZE =
+            Options.key("kubernetes.configmap.max-size")
+                    .longType()
+                    .defaultValue(1048576L)
+                    .withDescription(
+                            "Maximum total size in UTF-8 bytes of files packaged from "
+                                    + "kubernetes.conf-dir into the application ConfigMap "
+                                    + "(sum of key bytes + value bytes per entry); default and "
+                                    + "maximum are 1048576 (1 MiB). Exceeding the limit fails "
+                                    + "submission.");
+
     public static final Option<String> MASTER_LABELS =
             textOption(
                     "kubernetes.master.labels",
