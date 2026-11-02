@@ -206,9 +206,10 @@ public final class KubernetesOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Local directory whose first-level files are packaged into an owned "
-                                    + "ConfigMap and mounted over <seatunnel-home>/config on master "
-                                    + "and workers; unset keeps the image configuration.");
+                            "Submitter-local directory (host path) whose first-level files are "
+                                    + "packaged into an owned ConfigMap and mounted over the "
+                                    + "container path <seatunnel-home>/config on master and "
+                                    + "workers; unset keeps the image configuration.");
     public static final Option<Long> CONFIGMAP_MAX_SIZE =
             Options.key("kubernetes.configmap.max-size")
                     .longType()
