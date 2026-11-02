@@ -5,6 +5,23 @@ You need to check this document before you upgrade to related version.
 
 ## dev
 
+### Application Mode: Master HTTP follows seatunnel.yaml
+
+- **Affected jobs**: Zeta Application Mode deployments on Kubernetes (and any Application Mode
+  process that previously relied on HTTP being forced off).
+- **Behavior change**: Application Mode no longer force-disables HTTP on the master. Whether REST is
+  enabled, which port binds, and the context path come from the `seatunnel.yaml` the master loads
+  (`enable-http`, `port`, `context-path`), including a file selected by
+  `kubernetes.seatunnel-config-file` or owned ConfigMap data mounted onto that path. The packaged
+  distribution `seatunnel.yaml` sets `enable-http: true` and `port: 8080`, so masters that use those
+  defaults now expose REST (including job-management routes such as `/submit-job`) and declare an
+  `http` container/Service port on the existing headless Service. Workers still force HTTP and HTTPS
+  off. Auth settings are unchanged.
+- **Migration**: To keep the previous Application Mode behavior (no master HTTP), set
+  `enable-http: false` in the engine yaml the master loads, or mount such a file through
+  `kubernetes.seatunnel-config-file` / ConfigMap. Callers that assumed Application Mode never exposed
+  REST must either disable HTTP or restrict network access.
+
 ### JDBC Sink: fail safely after losing uncommitted work
 
 - **Affected jobs**: non-XA JDBC sinks with checkpointing enabled and a manual-commit connection

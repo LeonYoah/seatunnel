@@ -17,6 +17,8 @@
 
 package org.apache.seatunnel.resource.e2e.kubernetes;
 
+import org.apache.seatunnel.engine.common.config.ConfigProvider;
+import org.apache.seatunnel.engine.common.config.server.HttpConfig;
 import org.apache.seatunnel.engine.common.runtime.ApplicationStatus;
 import org.apache.seatunnel.resource.kubernetes.client.KubernetesApplicationClient;
 
@@ -132,6 +134,20 @@ public class KubernetesApplicationConfigurationIT extends AbstractKubernetesAppl
                         application.getClusterId(),
                         service.getSpec().getSelector().get(APPLICATION_LABEL));
                 assertEquals("master", service.getSpec().getSelector().get(ROLE_LABEL));
+                HttpConfig submitterHttp =
+                        ConfigProvider.locateAndGetSeaTunnelConfig()
+                                .getEngineConfig()
+                                .getHttpConfig();
+                boolean expectHttp = submitterHttp.isEnabled() && submitterHttp.getPort() > 0;
+                assertEquals(
+                        expectHttp,
+                        service.getSpec().getPorts().stream()
+                                .anyMatch(port -> "http".equals(port.getName())));
+                assertEquals(
+                        expectHttp,
+                        master.getSpec().getContainers().get(0).getPorts() != null
+                                && master.getSpec().getContainers().get(0).getPorts().stream()
+                                        .anyMatch(port -> "http".equals(port.getName())));
                 assertTrue(
                         master.getSpec()
                                 .getContainers()

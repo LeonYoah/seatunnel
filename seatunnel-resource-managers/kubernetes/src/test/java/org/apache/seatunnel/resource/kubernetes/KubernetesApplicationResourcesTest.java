@@ -1706,15 +1706,17 @@ class KubernetesApplicationResourcesTest {
     }
 
     @Test
-    void declaresHttpContainerAndServicePortsWhenEnabledViaSeatunnelConfigFile() throws Exception {
-        Path yaml = temporary.resolve("http-on.yaml");
-        Files.write(
-                yaml,
-                ("seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 18080\n")
-                        .getBytes(StandardCharsets.UTF_8));
+    void declaresHttpContainerAndServicePortsWhenEnabled() throws Exception {
+        // kubernetes.seatunnel-config-file is a container path (POSIX). Do not pass host
+        // absolute paths such as Windows drive letters; owned ConfigMap data mounted onto the
+        // default container path is the portable source for HTTP resolution in tests.
         Map<String, String> options = options();
         options.put(
-                KubernetesOptions.SEATUNNEL_CONFIG_FILE.key(), yaml.toAbsolutePath().toString());
+                "kubernetes.configmap.engine.data.seatunnel.yaml",
+                "seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 18080\n");
+        options.put(
+                "kubernetes.configmap.engine.mount.seatunnel.yaml",
+                "/opt/seatunnel/config/seatunnel.yaml");
         KubernetesApplicationConfig parameters =
                 KubernetesApplicationConfig.from(
                         specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
@@ -1748,15 +1750,14 @@ class KubernetesApplicationResourcesTest {
     }
 
     @Test
-    void omitsHttpPortsWhenDisabledViaSeatunnelConfigFile() throws Exception {
-        Path yaml = temporary.resolve("http-off.yaml");
-        Files.write(
-                yaml,
-                ("seatunnel:\n  engine:\n    http:\n      enable-http: false\n      port: 8080\n")
-                        .getBytes(StandardCharsets.UTF_8));
+    void omitsHttpPortsWhenDisabled() throws Exception {
         Map<String, String> options = options();
         options.put(
-                KubernetesOptions.SEATUNNEL_CONFIG_FILE.key(), yaml.toAbsolutePath().toString());
+                "kubernetes.configmap.engine.data.seatunnel.yaml",
+                "seatunnel:\n  engine:\n    http:\n      enable-http: false\n      port: 8080\n");
+        options.put(
+                "kubernetes.configmap.engine.mount.seatunnel.yaml",
+                "/opt/seatunnel/config/seatunnel.yaml");
         KubernetesApplicationConfig parameters =
                 KubernetesApplicationConfig.from(
                         specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
@@ -1782,18 +1783,25 @@ class KubernetesApplicationResourcesTest {
     }
 
     @Test
-    void resolvesHttpFromOwnedConfigMapDataMountedOntoSeatunnelConfigPath() throws Exception {
+    @DisabledOnOs(
+            value = OS.WINDOWS,
+            disabledReason =
+                    "kubernetes.seatunnel-config-file is a container path; a Windows host absolute "
+                            + "path (drive letter) is not a valid container path")
+    void resolvesHttpFromLocalSeatunnelConfigFileOnPosixHost() throws Exception {
+        Path yaml = temporary.resolve("http-local.yaml");
+        Files.write(
+                yaml,
+                ("seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 17070\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        // Absolute POSIX path only — valid as kubernetes.seatunnel-config-file on non-Windows.
+        String containerStylePath = yaml.toAbsolutePath().toString().replace('\\', '/');
         Map<String, String> options = options();
-        options.put(
-                "kubernetes.configmap.engine.data.seatunnel.yaml",
-                "seatunnel:\n  engine:\n    http:\n      enable-http: true\n      port: 19090\n");
-        options.put(
-                "kubernetes.configmap.engine.mount.seatunnel.yaml",
-                "/opt/seatunnel/config/seatunnel.yaml");
+        options.put(KubernetesOptions.SEATUNNEL_CONFIG_FILE.key(), containerStylePath);
         KubernetesApplicationConfig parameters =
                 KubernetesApplicationConfig.from(
                         specification(), ReadonlyConfig.fromMap(new HashMap<>(options)));
-        assertEquals(19090, parameters.httpContainerPort());
+        assertEquals(17070, parameters.httpContainerPort());
     }
 
     private static List<String> masterCommand(KubernetesApplicationConfig parameters) {

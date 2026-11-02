@@ -4,6 +4,20 @@
 
 ## dev
 
+### Application 模式：Master HTTP 跟随 seatunnel.yaml
+
+- **影响范围**：Kubernetes 上的 Zeta Application Mode 部署（以及此前依赖“强制关闭 HTTP”的
+  Application Mode 进程）。
+- **行为变化**：Application 模式不再在 Master 上强制关闭 HTTP。是否启用 REST、绑定端口与
+  context-path 均来自 Master 加载的 `seatunnel.yaml`（`enable-http` / `port` / `context-path`），
+  也包括通过 `kubernetes.seatunnel-config-file` 指定的文件，或挂载到该路径的自有 ConfigMap 数据。
+  发行包中的 `seatunnel.yaml` 默认 `enable-http: true`、`port: 8080`，因此使用该默认配置的 Master
+  会暴露 REST（含 `/submit-job` 等作业管理接口），并在已有 headless Service 上声明 `http`
+  container/Service 端口。Worker 仍强制关闭 HTTP 与 HTTPS。认证相关配置不变。
+- **升级说明**：若需保持此前 Application 模式行为（Master 不提供 HTTP），请在 Master 加载的引擎
+  yaml 中设置 `enable-http: false`，或通过 `kubernetes.seatunnel-config-file` / ConfigMap 挂载此类
+  文件。原先假定 Application 模式永不暴露 REST 的调用方需关闭 HTTP 或限制网络访问。
+
 ### JDBC Sink：未提交数据丢失后拒绝提交
 
 - **影响范围**：开启 checkpoint 且使用手动提交连接的非 XA JDBC Sink（`auto_commit = false`，

@@ -704,6 +704,10 @@ public final class KubernetesApplicationConfig {
      * load: owned ConfigMap inline data mounted onto {@code kubernetes.seatunnel-config-file}, then
      * that path when it exists on the submitter, otherwise {@link ConfigProvider} discovery (system
      * property / workdir / defaults). Auth is unchanged.
+     *
+     * <p>{@code kubernetes.seatunnel-config-file} is always a container path (POSIX, absolute or
+     * relative to {@code kubernetes.seatunnel-home}). Host paths with a Windows drive letter are
+     * rejected by option validation and must not be used here.
      */
     private HttpConfig resolveHttpConfig() {
         for (KubernetesConfigMapEntry entry : configMaps) {
