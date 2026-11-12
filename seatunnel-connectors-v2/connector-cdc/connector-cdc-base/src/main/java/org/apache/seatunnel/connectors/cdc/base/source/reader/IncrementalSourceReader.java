@@ -122,7 +122,8 @@ public class IncrementalSourceReader<T, C extends SourceConfig>
                 ((AutoCloseable) debeziumDeserializationSchema).close();
             }
         } catch (Exception e) {
-            throw new RuntimeException("Failed to close the CDC deserialization schema", e);
+            // Keep closing the remaining reader resources even if schema cleanup fails.
+            log.warn("Failed to close the CDC deserialization schema", e);
         } finally {
             super.close();
         }

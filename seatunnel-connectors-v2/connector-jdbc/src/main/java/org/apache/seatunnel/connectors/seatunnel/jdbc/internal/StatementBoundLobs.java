@@ -30,8 +30,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Temporary LOBs bound to a prepared statement. They stay alive until the batch executes, then
- * {@link #free(PreparedStatement)} releases them so Oracle does not keep the temporary LOBs.
+ * Tracks temporary JDBC {@link Clob}/{@link Blob} values bound to a {@link PreparedStatement}.
+ * Callers register LOBs with {@link #track(PreparedStatement, Clob)} or {@link
+ * #track(PreparedStatement, Blob)}; the LOBs stay alive until the batch executes, then {@link
+ * #free(PreparedStatement)} releases them so the driver/session does not retain temporary LOBs.
+ * Uses only standard {@code java.sql} types, so any dialect that creates temporary LOBs can reuse
+ * it.
  */
 public final class StatementBoundLobs {
 

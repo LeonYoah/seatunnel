@@ -497,6 +497,59 @@ class IncrementalSourceReaderTest {
     }
 
     @Test
+    void testCloseWarnsWhenAutoCloseableSchemaFailsAndStillClosesReader() throws Exception {
+        SourceConfig sourceConfig = incrementalSourceConfig();
+        DataSourceDialect<SourceConfig> dialect =
+                Mockito.mock(DataSourceDialect.class, Mockito.CALLS_REAL_METHODS);
+        SourceReader.Context context = Mockito.mock(SourceReader.Context.class);
+
+        @SuppressWarnings("unchecked")
+        IncrementalSourceSplitReader<SourceConfig> splitReader =
+                Mockito.mock(IncrementalSourceSplitReader.class);
+        CountDownLatch wakeUp = new CountDownLatch(1);
+        Mockito.when(splitReader.fetch())
+                .thenAnswer(
+                        invocation -> {
+                            wakeUp.await();
+                            return null;
+                        });
+        Mockito.doAnswer(
+                        invocation -> {
+                            wakeUp.countDown();
+                            return null;
+                        })
+                .when(splitReader)
+                .wakeUp();
+
+        @SuppressWarnings("unchecked")
+        RecordEmitter<SourceRecords, Object, SourceSplitStateBase> recordEmitter =
+                Mockito.mock(RecordEmitter.class);
+        @SuppressWarnings("unchecked")
+        DebeziumDeserializationSchema<Object> deserializationSchema =
+                Mockito.mock(
+                        DebeziumDeserializationSchema.class,
+                        Mockito.withSettings().extraInterfaces(AutoCloseable.class));
+        AutoCloseable closeableSchema = (AutoCloseable) deserializationSchema;
+        Mockito.doThrow(new Exception("injected schema close failure"))
+                .when(closeableSchema)
+                .close();
+
+        IncrementalSourceReader<Object, SourceConfig> reader =
+                new IncrementalSourceReader<>(
+                        dialect,
+                        new ArrayBlockingQueue<RecordsWithSplitIds<SourceRecords>>(2),
+                        () -> splitReader,
+                        recordEmitter,
+                        new SourceReaderOptions(ReadonlyConfig.fromMap(Collections.emptyMap())),
+                        context,
+                        sourceConfig,
+                        deserializationSchema);
+
+        Assertions.assertDoesNotThrow(reader::close);
+        Mockito.verify(closeableSchema).close();
+    }
+
+    @Test
     void testAddSplitsEnqueuesPrunedRestoredIncrementalSplit() {
         SourceConfig sourceConfig = incrementalSourceConfig();
         DataSourceDialect<SourceConfig> dialect =
