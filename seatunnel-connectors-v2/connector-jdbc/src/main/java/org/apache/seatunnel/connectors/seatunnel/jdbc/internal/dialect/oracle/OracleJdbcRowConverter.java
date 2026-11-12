@@ -27,7 +27,6 @@ import javax.annotation.Nullable;
 
 import java.io.ByteArrayInputStream;
 import java.io.StringReader;
-import java.sql.Blob;
 import java.sql.Clob;
 import java.sql.Connection;
 import java.sql.NClob;
@@ -154,15 +153,10 @@ public class OracleJdbcRowConverter extends AbstractJdbcRowConverter {
         if (seaTunnelDataType.getSqlType().equals(SqlType.BYTES)) {
             if (ORACLE_BLOB.equals(sourceType)) {
                 byte[] bytes = (byte[]) value;
-                if (bytes.length == 0) {
-                    // A zero-length binary stream is stored as NULL. An empty locator stays empty.
-                    Blob blob = statement.getConnection().createBlob();
-                    statement.setBlob(statementIndex, blob);
-                    StatementBoundLobs.track(statement, blob);
-                } else {
-                    statement.setBinaryStream(
-                            statementIndex, new ByteArrayInputStream(bytes), bytes.length);
-                }
+                // Empty and non-empty BLOBs share the binary-stream path. Temporary Blob locators
+                // are not created here; SQL NULL still goes through setNull.
+                statement.setBinaryStream(
+                        statementIndex, new ByteArrayInputStream(bytes), bytes.length);
             } else {
                 statement.setBytes(statementIndex, (byte[]) value);
             }
@@ -187,29 +181,15 @@ public class OracleJdbcRowConverter extends AbstractJdbcRowConverter {
     }
 
     /**
-     * Binds a CLOB or NCLOB. Long values go through {@link Connection#createClob()} or {@link
-     * Connection#createNClob()} and {@link Clob#setString(long, String)}, which keeps a surrogate
-     * pair that sits on an 8192-code-unit boundary. The temporary LOB is freed after the batch
-     * executes.
+     * Binds a CLOB or NCLOB. Empty and short values use a character stream (same path). Long values
+     * go through {@link Connection#createClob()} or {@link Connection#createNClob()} and {@link
+     * Clob#setString(long, String)}, which keeps a surrogate pair that sits on an 8192-code-unit
+     * boundary. Those temporary LOBs are freed after the batch executes. SQL NULL still uses {@code
+     * setNull}.
      */
     private static void setNationalLob(
             PreparedStatement statement, int statementIndex, String value, boolean national)
             throws SQLException {
-        // ojdbc stores a zero-length character stream as NULL. An empty temporary locator is an
-        // empty LOB, matching a source EMPTY_CLOB(). setString(1, "") can clear that locator.
-        if (value.isEmpty()) {
-            Connection connection = statement.getConnection();
-            if (national) {
-                NClob nclob = connection.createNClob();
-                statement.setNClob(statementIndex, nclob);
-                StatementBoundLobs.track(statement, nclob);
-            } else {
-                Clob clob = connection.createClob();
-                statement.setClob(statementIndex, clob);
-                StatementBoundLobs.track(statement, clob);
-            }
-            return;
-        }
         if (value.length() < LOB_UTF16_BLOCK) {
             StringReader reader = new StringReader(value);
             if (national) {

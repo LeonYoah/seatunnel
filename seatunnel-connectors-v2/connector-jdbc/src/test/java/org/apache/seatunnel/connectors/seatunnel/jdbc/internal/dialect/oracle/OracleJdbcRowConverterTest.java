@@ -150,58 +150,39 @@ public class OracleJdbcRowConverterTest {
     }
 
     @Test
-    public void testEmptyClobUsesEmptyLocator() throws SQLException {
-        Connection connection = mock(Connection.class);
-        Clob clob = mock(Clob.class);
+    public void testEmptyClobUsesCharacterStreamLikeShortValues() throws SQLException {
         PreparedStatement statement = mock(PreparedStatement.class);
-        when(statement.getConnection()).thenReturn(connection);
-        when(connection.createClob()).thenReturn(clob);
 
         writeLob(ORACLE_CLOB, "", statement);
 
-        verify(statement).setClob(1, clob);
-        verify(clob, never()).setString(anyLong(), any());
-        verify(statement, never()).setCharacterStream(anyInt(), any(Reader.class), anyInt());
-        verify(statement, never()).setCharacterStream(anyInt(), any(Reader.class), anyLong());
-
-        StatementBoundLobs.free(statement);
-        verify(clob).free();
+        verify(statement).setCharacterStream(eq(1), any(Reader.class), eq(0));
+        verify(statement, never()).getConnection();
+        verify(statement, never()).setClob(anyInt(), any(Clob.class));
+        verify(statement, never()).setNull(anyInt(), anyInt());
     }
 
     @Test
-    public void testEmptyNclobUsesEmptyLocator() throws SQLException {
-        Connection connection = mock(Connection.class);
-        NClob nclob = mock(NClob.class);
+    public void testEmptyNclobUsesNCharacterStreamLikeShortValues() throws SQLException {
         PreparedStatement statement = mock(PreparedStatement.class);
-        when(statement.getConnection()).thenReturn(connection);
-        when(connection.createNClob()).thenReturn(nclob);
 
         writeLob(ORACLE_NCLOB, "", statement);
 
-        verify(statement).setNClob(1, nclob);
-        verify(nclob, never()).setString(anyLong(), any());
-        verify(statement, never()).setNCharacterStream(anyInt(), any(Reader.class), anyLong());
-
-        StatementBoundLobs.free(statement);
-        verify(nclob).free();
+        verify(statement).setNCharacterStream(eq(1), any(Reader.class), eq(0L));
+        verify(statement, never()).getConnection();
+        verify(statement, never()).setNClob(anyInt(), any(NClob.class));
+        verify(statement, never()).setNull(anyInt(), anyInt());
     }
 
     @Test
-    public void testEmptyBlobUsesEmptyLocator() throws SQLException {
-        Connection connection = mock(Connection.class);
-        Blob blob = mock(Blob.class);
+    public void testEmptyBlobUsesBinaryStreamLikeNonEmptyValues() throws SQLException {
         PreparedStatement statement = mock(PreparedStatement.class);
-        when(statement.getConnection()).thenReturn(connection);
-        when(connection.createBlob()).thenReturn(blob);
 
         writeBytes(ORACLE_BLOB, new byte[0], statement);
 
-        verify(statement).setBlob(1, blob);
-        verify(statement, never()).setBinaryStream(anyInt(), any(InputStream.class), anyInt());
-        verify(statement, never()).setBinaryStream(anyInt(), any(InputStream.class), anyLong());
-
-        StatementBoundLobs.free(statement);
-        verify(blob).free();
+        verify(statement).setBinaryStream(eq(1), any(InputStream.class), eq(0));
+        verify(statement, never()).getConnection();
+        verify(statement, never()).setBlob(anyInt(), any(Blob.class));
+        verify(statement, never()).setNull(anyInt(), anyInt());
     }
 
     @Test
