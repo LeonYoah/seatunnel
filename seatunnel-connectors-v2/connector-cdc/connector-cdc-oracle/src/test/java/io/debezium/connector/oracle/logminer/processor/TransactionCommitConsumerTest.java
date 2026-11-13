@@ -28,6 +28,7 @@ import io.debezium.connector.oracle.Scn;
 import io.debezium.connector.oracle.logminer.events.DmlEvent;
 import io.debezium.connector.oracle.logminer.events.EventType;
 import io.debezium.connector.oracle.logminer.events.LobWriteEvent;
+import io.debezium.connector.oracle.logminer.parser.LobWriteParser;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntry;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntryImpl;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.LobFragment;
@@ -54,8 +55,8 @@ public class TransactionCommitConsumerTest {
 
     @Test
     public void keepsAnApostropheWhenLogMinerDoublesItInsideTheLiteral() {
-        LogMinerSqlParser.LobWrite parsed =
-                LogMinerSqlParser.parseLobWrite(
+        LobWriteParser.LobWrite parsed =
+                LobWriteParser.parse(
                         "buf_c := 'it''s a \uD83D\uDE00';\n  dbms_lob.write(loc_c, 8, 1, buf_c);");
 
         LobUnderConstruction lob = new LobUnderConstruction();
@@ -66,8 +67,8 @@ public class TransactionCommitConsumerTest {
 
     @Test
     public void keepsAnUnescapedApostropheFrom11gLobRedo() {
-        LogMinerSqlParser.LobWrite parsed =
-                LogMinerSqlParser.parseLobWrite(
+        LobWriteParser.LobWrite parsed =
+                LobWriteParser.parse(
                         "buf_c := 'it's a \uD83D\uDE00 clip. 你';\n  dbms_lob.write(loc_c, 16, 1, buf_c);");
 
         LobUnderConstruction lob = new LobUnderConstruction();

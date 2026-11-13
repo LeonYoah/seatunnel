@@ -15,23 +15,29 @@
  * limitations under the License.
  */
 
-package io.debezium.connector.oracle.logminer.processor;
+package io.debezium.connector.oracle.logminer.parser;
 
 import io.debezium.DebeziumException;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Parses the SQL text LogMiner reconstructs for one LOB write. */
-final class LogMinerSqlParser {
+/**
+ * Parses the SQL text LogMiner reconstructs for one {@code LOB_WRITE}.
+ *
+ * <p>The reconstructed statement assigns a SQL string literal or {@code HEXTORAW} buffer and then
+ * calls {@code dbms_lob.write}. A literal apostrophe is written twice on some Oracle versions; the
+ * {@code amount} argument still counts unescaped characters.
+ */
+public final class LobWriteParser {
 
     private static final Pattern LOB_WRITE_SQL_PATTERN =
             Pattern.compile(
                     "(?s).* := ((?:HEXTORAW\\()?'.*'(?:\\))?);\\s*dbms_lob.write\\([^,]+,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,[^,]+\\);.*");
 
-    private LogMinerSqlParser() {}
+    private LobWriteParser() {}
 
-    static LobWrite parseLobWrite(String sql) {
+    public static LobWrite parse(String sql) {
         if (sql == null) {
             return null;
         }
@@ -68,10 +74,10 @@ final class LogMinerSqlParser {
         return builder.toString();
     }
 
-    static final class LobWrite {
-        final int offset;
-        final int length;
-        final String data;
+    public static final class LobWrite {
+        public final int offset;
+        public final int length;
+        public final String data;
 
         LobWrite(int offset, int length, String data) {
             this.offset = offset;

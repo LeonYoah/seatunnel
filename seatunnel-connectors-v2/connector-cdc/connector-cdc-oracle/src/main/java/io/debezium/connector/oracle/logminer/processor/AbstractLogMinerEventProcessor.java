@@ -43,11 +43,13 @@ import io.debezium.connector.oracle.logminer.events.XmlBeginEvent;
 import io.debezium.connector.oracle.logminer.events.XmlEndEvent;
 import io.debezium.connector.oracle.logminer.events.XmlWriteEvent;
 import io.debezium.connector.oracle.logminer.parser.DmlParserException;
+import io.debezium.connector.oracle.logminer.parser.LobWriteParser;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntry;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntryImpl;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlParser;
 import io.debezium.connector.oracle.logminer.parser.SelectLobParser;
 import io.debezium.connector.oracle.logminer.parser.XmlBeginParser;
+import io.debezium.connector.oracle.logminer.parser.XmlWriteParser;
 import io.debezium.data.Envelope;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.source.spi.ChangeEventSource.ChangeEventSourceContext;
@@ -771,7 +773,8 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
                     row.getTransactionId(),
                     row,
                     () -> {
-                        final ParsedLobWriteSql parsed = parseLobWriteSql(row.getRedoSql());
+                        final LobWriteParser.LobWrite parsed =
+                                LobWriteParser.parse(row.getRedoSql());
                         return new LobWriteEvent(row, parsed.data, parsed.offset, parsed.length);
                     });
         }
@@ -1193,33 +1196,6 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
         }
 
         return dmlEntry;
-    }
-
-    /**
-     * Parses a {@code LOB_WRITE} operation SQL fragment.
-     *
-     * @param sql sql statement
-     * @return the parsed statement
-     * @throws DebeziumException if an unexpected SQL fragment is provided that cannot be parsed
-     */
-    private ParsedLobWriteSql parseLobWriteSql(String sql) {
-        LogMinerSqlParser.LobWrite parsed = LogMinerSqlParser.parseLobWrite(sql);
-        if (parsed == null) {
-            return null;
-        }
-        return new ParsedLobWriteSql(parsed.offset, parsed.length, parsed.data);
-    }
-
-    private class ParsedLobWriteSql {
-        final int offset;
-        final int length;
-        final String data;
-
-        ParsedLobWriteSql(int _offset, int _length, String _data) {
-            offset = _offset;
-            length = _length;
-            data = _data;
-        }
     }
 
     /**

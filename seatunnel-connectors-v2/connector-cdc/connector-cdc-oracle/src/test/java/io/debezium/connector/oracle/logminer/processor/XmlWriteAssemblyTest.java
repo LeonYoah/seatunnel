@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import io.debezium.connector.oracle.Scn;
 import io.debezium.connector.oracle.logminer.events.EventType;
 import io.debezium.connector.oracle.logminer.events.XmlWriteEvent;
+import io.debezium.connector.oracle.logminer.parser.XmlWriteParser;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.XmlFragment;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.XmlUnderConstruction;
 import io.debezium.relational.TableId;

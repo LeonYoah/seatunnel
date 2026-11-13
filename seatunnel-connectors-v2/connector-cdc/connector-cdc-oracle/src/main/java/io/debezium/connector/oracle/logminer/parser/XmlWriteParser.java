@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package io.debezium.connector.oracle.logminer.processor;
+package io.debezium.connector.oracle.logminer.parser;
 
 import oracle.sql.RAW;
 
@@ -30,14 +30,14 @@ import java.sql.SQLException;
  * characters. Oracle 11g and 21c also emit the document text directly, without the {@code XML_REDO}
  * preamble.
  */
-final class XmlWriteParser {
+public final class XmlWriteParser {
 
     static final String XML_WRITE_PREAMBLE = "XML_REDO := ";
     private static final String XML_WRITE_PREAMBLE_NULL = XML_WRITE_PREAMBLE + "NULL";
 
     private XmlWriteParser() {}
 
-    static Payload parse(String sql) throws SQLException {
+    public static Payload parse(String sql) throws SQLException {
         if (sql == null) {
             throw new IllegalStateException("XML write operation does not contain document text");
         }
@@ -55,7 +55,7 @@ final class XmlWriteParser {
                 throw new IllegalStateException("Failed to find end of XML document");
             }
             String xml =
-                    LogMinerSqlParser.unescapeLiteral(
+                    LobWriteParser.unescapeLiteral(
                             body.substring(XML_WRITE_PREAMBLE.length() + 1, lastQuoteIndex));
             return Payload.text(xml, lengthOf(body));
         }
@@ -85,7 +85,7 @@ final class XmlWriteParser {
         return Integer.parseInt(sql.substring(lastColonIndex + 1).trim());
     }
 
-    static final class Payload {
+    public static final class Payload {
         private final String text;
         private final byte[] bytes;
         private final int length;
@@ -110,19 +110,19 @@ final class XmlWriteParser {
             return new Payload(null, bytes, length, false);
         }
 
-        String getText() {
+        public String getText() {
             return text;
         }
 
-        byte[] getBytes() {
+        public byte[] getBytes() {
             return bytes;
         }
 
-        int getLength() {
+        public int getLength() {
             return length;
         }
 
-        boolean isNullValue() {
+        public boolean isNullValue() {
             return nullValue;
         }
     }
