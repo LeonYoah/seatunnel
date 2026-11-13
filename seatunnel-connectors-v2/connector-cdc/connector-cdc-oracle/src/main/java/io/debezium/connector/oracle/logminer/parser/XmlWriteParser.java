@@ -29,13 +29,8 @@ import java.sql.SQLException;
  * <p>Follows Debezium {@code XmlWriteParser}: {@code XML_REDO := NULL} or blank SQL is null; when
  * {@code INFO} ends with {@code not re-executable} the payload is {@code XML_REDO :=} / {@code
  * HEXTORAW}; otherwise {@code SQL_REDO} is the document text (11g and 21c). {@code HEXTORAW} chunks
- * stay bytes so a UTF-8 character split across writes is decoded once at merge.
- *
- * @see <a
- *     href="https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/XmlWriteParser.java">Debezium
- *     XmlWriteParser</a>
- * @see <a
- *     href="https://github.com/debezium/debezium/commit/08662a418949deb3500a834dd232cef608c19c9e">debezium/dbz#1373</a>
+ * stay bytes so a UTF-8 character split across writes is decoded once at merge. See <a
+ * href="https://github.com/debezium/dbz/issues/1373">debezium/dbz#1373</a>.
  */
 public final class XmlWriteParser {
 

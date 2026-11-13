@@ -27,13 +27,8 @@ import java.util.regex.Pattern;
  * Parses the SQL text LogMiner reconstructs for one {@code LOB_WRITE}.
  *
  * <p>Aligned with Debezium {@code LobWriteParser}: drop the SQL quotes, then collapse a doubled
- * apostrophe so {@code TransactionCommitConsumer} does not truncate the chunk.
- *
- * @see <a
- *     href="https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/LobWriteParser.java">Debezium
- *     LobWriteParser</a>
- * @see <a
- *     href="https://github.com/debezium/debezium/commit/4d826b4e278a98233189dd0d2371b6c01cb11c0b">DBZ-8924</a>
+ * apostrophe so {@code TransactionCommitConsumer} does not truncate the chunk. See <a
+ * href="https://issues.redhat.com/browse/DBZ-8924">DBZ-8924</a>.
  */
 public final class LobWriteParser {
 
@@ -70,7 +65,6 @@ public final class LobWriteParser {
         // Double check whether Oracle may have escaped single-quotes in the SQL data.
         // This avoids unintended truncation during the LOB merge phase during the commit
         // logic handled by TransactionCommitConsumer.
-        // https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/LobWriteParser.java
         if (data.contains("''")) {
             data = data.replaceAll("''", "'");
         }

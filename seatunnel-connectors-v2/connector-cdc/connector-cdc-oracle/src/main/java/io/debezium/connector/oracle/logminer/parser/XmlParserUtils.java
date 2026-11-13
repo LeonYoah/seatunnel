@@ -23,9 +23,7 @@ import io.debezium.connector.oracle.logminer.events.LogMinerEventRow;
  * Helpers for Oracle LogMiner XML redo. Matches Debezium {@code XmlParserUtils}: binary {@code
  * XML_WRITE} rows have {@code INFO} ending with {@code not re-executable}.
  *
- * @see <a
- *     href="https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/XmlParserUtils.java">Debezium
- *     XmlParserUtils</a>
+ * @see XmlWriteParser
  */
 public final class XmlParserUtils {
 
