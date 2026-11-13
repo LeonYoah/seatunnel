@@ -271,7 +271,7 @@ exit;
 
 下游 SeaTunnel 类型不变（字符型 LOB 为 STRING，BLOB 为 BYTES）。目标表请用能装大对象的列类型（例如 CLOB、LONGTEXT），不要用很短的 VARCHAR。快照和 re-select 会把 LOB 读进内存，请按最大列值和分片并行度给 reader 留够堆。
 
-`lob.enabled = true` 开始挖掘这些 redo，值透传给 Debezium。不设置时，`debezium.lob.enabled` 仍然有效；显式设置会覆盖它。没有后续写入的 `EMPTY_CLOB()` / `EMPTY_BLOB()` 是空字符串或空字节，SQL `NULL` 仍是 null。同一事务里同一行的事件会合并，后一条 SQL `NULL` 会覆盖先前的值。不可用值占位符仍表示该 redo 记录没有这一列，合并时保持原值。没开挖掘就把 `lob.reselect.enabled` 设为 true，或把 `lob.unavailable-value.handling` 设为 `null` / `fail`，提交时会被拒绝。
+`lob.enabled = true` 开始挖掘这些 redo，值透传给 Debezium。不设置时，`debezium.lob.enabled` 仍然有效；显式设置会覆盖它。同一事务里同一行的事件会合并，后一条 SQL `NULL` 会覆盖先前的值。不可用值占位符仍表示该 redo 记录没有这一列，合并时保持原值。没开挖掘就把 `lob.reselect.enabled` 设为 true，或把 `lob.unavailable-value.handling` 设为 `null` / `fail`，提交时会被拒绝。
 
 现象：挖掘打开后，如果不设 `lob.reselect.enabled`，UPDATE 里这次没改到的 LOB 列，以及 DELETE、UPDATE_BEFORE 里的 LOB 列，仍是占位符 `__debezium_unavailable_value`。按整行更新的 sink 会把库里原来的值盖成这个占位符。
 

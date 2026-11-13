@@ -153,8 +153,6 @@ public class OracleJdbcRowConverter extends AbstractJdbcRowConverter {
         if (seaTunnelDataType.getSqlType().equals(SqlType.BYTES)) {
             if (ORACLE_BLOB.equals(sourceType)) {
                 byte[] bytes = (byte[]) value;
-                // Empty and non-empty BLOBs share the binary-stream path. Temporary Blob locators
-                // are not created here; SQL NULL still goes through setNull.
                 statement.setBinaryStream(
                         statementIndex, new ByteArrayInputStream(bytes), bytes.length);
             } else {
@@ -181,11 +179,10 @@ public class OracleJdbcRowConverter extends AbstractJdbcRowConverter {
     }
 
     /**
-     * Binds a CLOB or NCLOB. Empty and short values use a character stream (same path). Long values
-     * go through {@link Connection#createClob()} or {@link Connection#createNClob()} and {@link
-     * Clob#setString(long, String)}, which keeps a surrogate pair that sits on an 8192-code-unit
-     * boundary. Those temporary LOBs are freed after the batch executes. SQL NULL still uses {@code
-     * setNull}.
+     * Binds a CLOB or NCLOB. Short values use a character stream. Long values go through {@link
+     * Connection#createClob()} or {@link Connection#createNClob()} and {@link Clob#setString(long,
+     * String)}, which keeps a surrogate pair that sits on an 8192-code-unit boundary. Those
+     * temporary LOBs are freed after the batch executes.
      */
     private static void setNationalLob(
             PreparedStatement statement, int statementIndex, String value, boolean national)
