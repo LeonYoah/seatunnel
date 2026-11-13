@@ -35,12 +35,13 @@ import io.debezium.connector.oracle.logminer.events.TruncateEvent;
 import io.debezium.connector.oracle.logminer.events.XmlBeginEvent;
 import io.debezium.connector.oracle.logminer.events.XmlEndEvent;
 import io.debezium.connector.oracle.logminer.events.XmlWriteEvent;
+import io.debezium.connector.oracle.logminer.parser.XmlWriteParser;
 import io.debezium.function.BlockingConsumer;
 import io.debezium.relational.Table;
+import oracle.sql.CharacterSet;
 import oracle.sql.RAW;
 
 import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -182,7 +183,9 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
                     columnName,
                     table,
                     accumulatorEvent,
-                    XmlUnderConstruction::fromInitialValue);
+                    value ->
+                            XmlUnderConstruction.fromInitialValue(
+                                    value, schema.getDatabaseCharacterSet()));
         }
     }
 
@@ -882,27 +885,42 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
 
     static class XmlUnderConstruction extends AbstractUnderConstruction<XmlFragment> {
 
+        private final CharacterSet characterSet;
+
+        XmlUnderConstruction() {
+            this(null);
+        }
+
+        XmlUnderConstruction(CharacterSet characterSet) {
+            this.characterSet = characterSet;
+        }
+
         static XmlUnderConstruction fromInitialValue(Object value) {
+            return fromInitialValue(value, null);
+        }
+
+        static XmlUnderConstruction fromInitialValue(Object value, CharacterSet characterSet) {
             if (null == value) {
-                return new XmlUnderConstruction();
+                return new XmlUnderConstruction(characterSet);
             }
             if (value instanceof XmlUnderConstruction) {
                 return (XmlUnderConstruction) value;
             }
             if (value instanceof String) {
-                XmlUnderConstruction lob = new XmlUnderConstruction();
+                XmlUnderConstruction lob = new XmlUnderConstruction(characterSet);
                 lob.add(new XmlFragment((String) value));
                 return lob;
             }
 
             LOGGER.trace("Don't know how to construct an initial XML value from {}.", value);
-            return new XmlUnderConstruction();
+            return new XmlUnderConstruction(characterSet);
         }
 
         /**
          * Assembles the document. Consecutive {@code HEXTORAW} chunks are concatenated as bytes and
-         * decoded as one UTF-8 string, so a character split across chunk boundaries stays intact.
-         * Quoted inline chunks are already characters and are appended as text.
+         * decoded once with the database character set, so a character split across chunk
+         * boundaries stays intact. Quoted inline chunks are already characters and are appended as
+         * text.
          */
         @Override
         Object merge() {
@@ -927,11 +945,11 @@ public class TransactionCommitConsumer implements AutoCloseable, BlockingConsume
             return text.toString();
         }
 
-        private static void appendBytes(StringBuilder text, ByteArrayOutputStream pendingBytes) {
+        private void appendBytes(StringBuilder text, ByteArrayOutputStream pendingBytes) {
             if (pendingBytes == null || pendingBytes.size() == 0) {
                 return;
             }
-            text.append(new String(pendingBytes.toByteArray(), StandardCharsets.UTF_8));
+            text.append(XmlWriteParser.decodeHexBytes(pendingBytes.toByteArray(), characterSet));
         }
     }
 

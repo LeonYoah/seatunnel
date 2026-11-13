@@ -17,8 +17,11 @@
 
 package io.debezium.connector.oracle.logminer.parser;
 
+import io.debezium.DebeziumException;
 import io.debezium.connector.oracle.logminer.events.LogMinerEventRow;
 import io.debezium.util.Strings;
+import oracle.sql.CHAR;
+import oracle.sql.CharacterSet;
 import oracle.sql.RAW;
 
 import java.sql.SQLException;
@@ -29,8 +32,10 @@ import java.sql.SQLException;
  * <p>Follows Debezium {@code XmlWriteParser}: {@code XML_REDO := NULL} or blank SQL is null; when
  * {@code INFO} ends with {@code not re-executable} the payload is {@code XML_REDO :=} / {@code
  * HEXTORAW}; otherwise {@code SQL_REDO} is the document text (11g and 21c). {@code HEXTORAW} chunks
- * stay bytes so a UTF-8 character split across writes is decoded once at merge. See <a
- * href="https://github.com/debezium/dbz/issues/1373">debezium/dbz#1373</a>.
+ * stay bytes and are decoded once at merge with the database character set, so a character split
+ * across writes stays intact. See <a
+ * href="https://github.com/debezium/dbz/issues/1373">debezium/dbz#1373</a> and <a
+ * href="https://github.com/debezium/dbz/issues/1798">debezium/dbz#1798</a>.
  */
 public final class XmlWriteParser {
 
@@ -82,6 +87,26 @@ public final class XmlWriteParser {
             xmlHex = xmlHex.substring(10, xmlHex.length() - 1);
         }
         return Payload.bytes(RAW.hexString2Bytes(xmlHex), lengthOf(redoSql));
+    }
+
+    /**
+     * Decodes assembled {@code HEXTORAW} bytes with the database character set. Debezium does this
+     * per chunk; assembling first keeps a character that LogMiner split across writes. See <a
+     * href="https://github.com/debezium/dbz/issues/1798">debezium/dbz#1798</a>.
+     */
+    public static String decodeHexBytes(byte[] bytes, CharacterSet characterSet) {
+        if (bytes == null || bytes.length == 0) {
+            return "";
+        }
+        CharacterSet cs =
+                characterSet != null
+                        ? characterSet
+                        : CharacterSet.make(CharacterSet.AL32UTF8_CHARSET);
+        try {
+            return new CHAR(bytes, 0, bytes.length, cs).toString();
+        } catch (SQLException e) {
+            throw new DebeziumException("Failed to decode XML HEXTORAW bytes", e);
+        }
     }
 
     private static int lengthOf(String sql) {

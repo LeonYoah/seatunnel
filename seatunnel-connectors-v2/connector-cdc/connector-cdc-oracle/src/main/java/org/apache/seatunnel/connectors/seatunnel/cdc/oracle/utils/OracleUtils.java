@@ -412,7 +412,8 @@ public class OracleUtils {
                 defaultValueConverter,
                 schemaNameAdjuster,
                 topicSelector,
-                tableNameCaseSensitivity);
+                tableNameCaseSensitivity,
+                OracleConnectionUtils.getDatabaseCharacterSet(connection));
     }
 
     /** Creates a new {@link OracleDatabaseSchema} to monitor the latest oracle database schemas. */
@@ -436,7 +437,8 @@ public class OracleUtils {
                 defaultValueConverter,
                 schemaNameAdjuster,
                 topicSelector,
-                tableNameCaseSensitivity);
+                tableNameCaseSensitivity,
+                OracleConnectionUtils.getDatabaseCharacterSet(connection));
     }
 
     public static RedoLogOffset getRedoLogPosition(SourceRecord dataRecord) {

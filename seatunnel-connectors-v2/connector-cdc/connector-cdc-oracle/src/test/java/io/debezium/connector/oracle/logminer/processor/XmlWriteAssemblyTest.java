@@ -27,6 +27,7 @@ import io.debezium.connector.oracle.logminer.parser.XmlWriteParser;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.XmlFragment;
 import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer.XmlUnderConstruction;
 import io.debezium.relational.TableId;
+import oracle.sql.CharacterSet;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -53,6 +54,33 @@ public class XmlWriteAssemblyTest {
                 "数符癸",
                 Arrays.copyOfRange(document, 0, split),
                 Arrays.copyOfRange(document, split, document.length));
+    }
+
+    @Test
+    public void decodesLatin1HexChunksWithTheDatabaseCharacterSetAfterAssembly() {
+        // "<root>Ä</root>" in WE8ISO8859P1; Ä is 0xC4, which is not valid UTF-8 alone.
+        byte[] document =
+                new byte[] {
+                    0x3c,
+                    0x72,
+                    0x6f,
+                    0x6f,
+                    0x74,
+                    0x3e,
+                    (byte) 0xc4,
+                    0x3c,
+                    0x2f,
+                    0x72,
+                    0x6f,
+                    0x6f,
+                    0x74,
+                    0x3e
+                };
+        CharacterSet latin1 = CharacterSet.make(CharacterSet.WE8ISO8859P1_CHARSET);
+        XmlUnderConstruction xml = new XmlUnderConstruction(latin1);
+        xml.add(new XmlFragment(bytesEvent(Arrays.copyOfRange(document, 0, 7))));
+        xml.add(new XmlFragment(bytesEvent(Arrays.copyOfRange(document, 7, document.length))));
+        Assertions.assertEquals("<root>\u00C4</root>", xml.merge());
     }
 
     @Test

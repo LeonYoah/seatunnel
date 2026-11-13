@@ -33,6 +33,7 @@ import io.debezium.schema.SchemaChangeEvent;
 import io.debezium.schema.TopicSelector;
 import io.debezium.util.SchemaNameAdjuster;
 import oracle.jdbc.OracleTypes;
+import oracle.sql.CharacterSet;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -54,6 +55,7 @@ public class OracleDatabaseSchema extends HistorizedRelationalDatabaseSchema {
     private final ConcurrentMap<TableId, List<Column>> lobColumnsByTableId =
             new ConcurrentHashMap<>();
     private final OracleValueConverters valueConverters;
+    private final CharacterSet databaseCharacterSet;
 
     private boolean storageInitializationExecuted = false;
 
@@ -64,6 +66,24 @@ public class OracleDatabaseSchema extends HistorizedRelationalDatabaseSchema {
             SchemaNameAdjuster schemaNameAdjuster,
             TopicSelector<TableId> topicSelector,
             TableNameCaseSensitivity tableNameCaseSensitivity) {
+        this(
+                connectorConfig,
+                valueConverters,
+                defaultValueConverter,
+                schemaNameAdjuster,
+                topicSelector,
+                tableNameCaseSensitivity,
+                null);
+    }
+
+    public OracleDatabaseSchema(
+            OracleConnectorConfig connectorConfig,
+            OracleValueConverters valueConverters,
+            DefaultValueConverter defaultValueConverter,
+            SchemaNameAdjuster schemaNameAdjuster,
+            TopicSelector<TableId> topicSelector,
+            TableNameCaseSensitivity tableNameCaseSensitivity,
+            CharacterSet databaseCharacterSet) {
         super(
                 connectorConfig,
                 topicSelector,
@@ -81,6 +101,7 @@ public class OracleDatabaseSchema extends HistorizedRelationalDatabaseSchema {
                 connectorConfig.getKeyMapper());
 
         this.valueConverters = valueConverters;
+        this.databaseCharacterSet = databaseCharacterSet;
         this.ddlParser =
                 new OracleDdlParser(
                         true,
@@ -96,6 +117,14 @@ public class OracleDatabaseSchema extends HistorizedRelationalDatabaseSchema {
 
     public OracleValueConverters getValueConverters() {
         return valueConverters;
+    }
+
+    /**
+     * Database character set for {@code VARCHAR2}, {@code CHAR}, {@code CLOB}, and XML {@code
+     * HEXTORAW} bytes. May be {@code null} when the schema was created without a live connection.
+     */
+    public CharacterSet getDatabaseCharacterSet() {
+        return databaseCharacterSet;
     }
 
     @Override
