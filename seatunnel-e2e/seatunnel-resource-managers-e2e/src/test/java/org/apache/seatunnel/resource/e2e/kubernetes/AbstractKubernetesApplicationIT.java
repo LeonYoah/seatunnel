@@ -190,10 +190,17 @@ public abstract class AbstractKubernetesApplicationIT implements TestResource {
 
     protected static KubernetesApplicationClient deployApplication(
             ApplicationSpecification specification, String scenario) throws Exception {
+        return deployApplication(specification, scenario, Collections.emptyMap());
+    }
+
+    protected static KubernetesApplicationClient deployApplication(
+            ApplicationSpecification specification,
+            String scenario,
+            Map<String, String> optionOverrides)
+            throws Exception {
         Map<String, String> options =
                 SeatunnelApplicationConfig.load(
-                        scenarioFile(scenario, "application.config").toPath(),
-                        Collections.emptyMap());
+                        scenarioFile(scenario, "application.config").toPath(), optionOverrides);
         ApplicationClusterDeployer applicationDeployer =
                 new ApplicationClusterDeployer(DeployType.KUBERNETES, specification, options);
         return new KubernetesApplicationClient(platformMonitor, applicationDeployer.run());
@@ -716,7 +723,7 @@ public abstract class AbstractKubernetesApplicationIT implements TestResource {
     }
 
     /** Reads one file of the distribution {@code config/} directory. */
-    private static String distributionConfig(String name) throws IOException {
+    protected static String distributionConfig(String name) throws IOException {
         return new String(
                 Files.readAllBytes(Paths.get(PROJECT_ROOT_PATH, "config", name)),
                 StandardCharsets.UTF_8);

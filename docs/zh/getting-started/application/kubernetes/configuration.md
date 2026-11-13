@@ -56,6 +56,8 @@ Application Mode 在提交机上读取部署文件（`-a`，包含 `application.
 | `kubernetes.worker.jvm-options-file` | string | no | `jvm_worker_options` | Worker 的 JVM 参数文件，取值形式与 Master 相同。 |
 | `kubernetes.jvm-options-file` | string | no | `jvm_options` | 公共 JVM 参数文件，先于角色文件应用于 Master 和 Worker；设为 `disabled` 表示不传公共参数文件。 |
 | `kubernetes.log4j-config-file` | string | no | `log4j2_client.properties` | 传给 `-Dlog4j2.configurationFile` 的 Log4j2 配置：`<seatunnel-home>/config` 下的文件名或绝对路径。默认保持 console 日志；设为 `log4j2.properties` 使用写文件的服务端配置。 |
+| `kubernetes.conf-dir` | string | no | - | 本地配置目录：仅打包首层文件到自有 ConfigMap（`<application-id>-conf-map`），并整目录挂载覆盖 Master/Worker 的 `<seatunnel-home>/config`。会覆盖镜像默认配置；若 `kubernetes.*-file` 指向该目录下的文件而 conf-dir 中缺失，提交失败。文件名须符合 ConfigMap key 正则 `[-._a-zA-Z0-9]+`。不要与指向同一 `config/` 路径的 `kubernetes.configmap.*.mount` 同时使用。 |
+| `kubernetes.conf-dir.max-size` | long | no | `1048576` | **仅在设置 `kubernetes.conf-dir` 时生效**：从 conf-dir 打包的文件总大小上限（UTF-8 字节：每个条目的 key 字节数 + value 字节数），默认与硬上限均为 1048576（1 MiB）。超出则提交失败。未设置 conf-dir 时忽略该选项（打 WARN）。 |
 | `kubernetes.seatunnel-config-file` | string | no | `config/seatunnel.yaml` | 传给 `-Dseatunnel.config` 的引擎配置文件：相对 `<seatunnel-home>` 的路径或绝对 `.yaml`/`.yml` 路径。 |
 | `kubernetes.master.labels` | map | no | - | Master Pod 的附加 label，格式为逗号分隔的 `key:value`；SeaTunnel 所有权 label 为保留项。 |
 | `kubernetes.worker.labels` | map | no | - | Worker Pod 的附加 label，格式为逗号分隔的 `key:value`；SeaTunnel 所有权 label 为保留项。 |
@@ -120,7 +122,7 @@ Provider 不创建这类凭据，也不提供任意 Pod template。Connector 引
 | Pod | `list`、`deletecollection` | 始终需要；`list` 供 `status` 查询，`deletecollection` 供 `cancel` 清理 |
 | Service | `create`、`delete` | 始终需要；用于选中 Master Pod 的 headless Service |
 | ConfigMap | `get` | `kubernetes.configmap.<entry>.ref`；无权限时校验降级为告警 |
-| ConfigMap | `create`、`delete` | 仅使用创建型条目时（`kubernetes.configmap.<entry>.data`） |
+| ConfigMap | `create`、`delete` | `kubernetes.conf-dir` 或创建型条目（`kubernetes.configmap.<entry>.data`） |
 | Secret | `create`、`delete` | 仅使用 `kubernetes.secret` 时 |
 | Secret | `get` | 仅使用 `kubernetes.secret-ref` 时；无权限时校验降级为告警 |
 
@@ -267,6 +269,51 @@ kubernetes {
 凭据不要放进 ConfigMap：它不具备保密性。作业需要凭据时使用 Secret + `kubernetes.env` /
 `${VAR}` 注入。
 :::
+
+## 整目录配置（`kubernetes.conf-dir`）
+
+仅在需要打包并挂载本地配置目录时设置 `kubernetes.conf-dir`（对齐 Spark `SPARK_CONF_DIR`）。未设置时
+保持镜像默认配置不变。
+
+```bash
+bin/seatunnel-application.sh submit -t kubernetes -a kubernetes.conf \
+  -Dkubernetes.conf-dir=/path/to/myconf
+```
+
+在 `/path/to/myconf` 下放置**首层**文件（不递归），例如：
+
+- `seatunnel.yaml`
+- `log4j2_client.properties` / `log4j2.properties`
+- `jvm_options` / `jvm_master_options` / `jvm_worker_options`
+- `hive-site.xml`
+- `metrics.properties`
+
+过滤规则对齐 Spark：排除 `gz|zip|jar|tar` 与 `*.template`，非 UTF-8 跳过并 WARN（不带堆栈），
+跳过子目录，保留其他首层文件（含 yaml/properties，例如 `seatunnel.yaml`、`hive-site.xml`）。
+被跳过的首层条目会在 INFO 汇总。文件名会成为 ConfigMap data key，须匹配 `[-._a-zA-Z0-9]+`
+（不能含空格或非 ASCII）。大小按每个 ConfigMap 条目的 UTF-8 key 字节数 + value 字节数累计（比
+Spark 的 `String.length` 字符计数更接近 etcd 对象上限）。若打包结果会超过
+`kubernetes.conf-dir.max-size`（默认/最大 1048576；该选项仅在启用 conf-dir 时生效），提交会
+**快速失败**，并给出实际总大小、上限与最大的几个文件，而不是静默丢掉文件导致半隐藏挂载。提交端还会
+校验：凡 `kubernetes.*-file` 指向 `<seatunnel-home>/config` 下的路径，对应文件必须存在于本地
+conf-dir（选项为 `disabled` 的除外）。ConfigMap 为 immutable，归属 application Job，名为
+`<application-id>-conf-map`，整目录挂载到 `<seatunnel-home>/config`，并设置 `SEATUNNEL_CONF_DIR`。
+该挂载会**覆盖/隐藏**镜像默认 `config/`。
+
+:::caution
+不要再使用 `kubernetes.configmap.<entry>.(ref|data|mount)` 把文件 `mount` 到同一
+`<seatunnel-home>/config` 路径。两者冲突时提交会失败并给出明确错误。整目录与单文件 subPath
+覆盖二选一，不要对同一路径混用。
+:::
+
+**单文件覆盖（subPath）** 在不使用 `kubernetes.conf-dir` 时仍然可用：
+
+```hocon
+kubernetes.configmap.engine-config {
+  ref = platform-engine-config
+  mount.seatunnel.yaml = /opt/seatunnel/config/seatunnel.yaml
+}
+```
 
 ## ConfigMap 与运行时文件
 

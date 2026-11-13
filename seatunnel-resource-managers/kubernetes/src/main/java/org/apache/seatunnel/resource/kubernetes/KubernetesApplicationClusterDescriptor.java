@@ -37,6 +37,7 @@ import org.apache.seatunnel.resource.kubernetes.exception.KubernetesClientExcept
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesClient;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesConstants;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesResourceIdentity;
+import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.ConfDirDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.ConfigMapDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.EnvironmentDecorator;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.decorators.HeadlessServiceDecorator;
@@ -146,6 +147,7 @@ final class KubernetesApplicationClusterDescriptor implements ClusterDescriptor<
                         new EnvironmentDecorator(parameters),
                         new SecretDecorator(id, parameters),
                         new ConfigMapDecorator(id, parameters),
+                        new ConfDirDecorator(id, parameters),
                         new HeadlessServiceDecorator(id, parameters));
         List<KubernetesResource<?>> resources = new ArrayList<>();
         for (KubernetesStepDecorator decorator : decorators) {
@@ -382,12 +384,19 @@ final class KubernetesApplicationClusterDescriptor implements ClusterDescriptor<
             return failure;
         }
         KubernetesClientException clientFailure = (KubernetesClientException) failure;
-        return new KubernetesClientException(
-                clientFailure.getCode(),
+        String detail =
                 String.format(
                         "Kubernetes application deployment failed for %s (HTTP %d)",
-                        id, clientFailure.getCode()),
-                clientFailure);
+                        id, clientFailure.getCode());
+        if (clientFailure.getCode() == 403) {
+            detail +=
+                    ". If creating ConfigMaps is forbidden, grant the submitter Role "
+                            + "configmaps verbs create and delete (needed for "
+                            + "kubernetes.conf-dir and kubernetes.configmap.<entry>.data). "
+                            + "Original message: "
+                            + clientFailure.getMessage();
+        }
+        return new KubernetesClientException(clientFailure.getCode(), detail, clientFailure);
     }
 
     private String awaitMaster(String id, long timeoutMillis) throws Exception {

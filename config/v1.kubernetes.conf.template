@@ -71,4 +71,11 @@ kubernetes {
   # Optional: tolerate tainted node pools. Entries are key[=value][:Effect] separated by ';'.
   # master.tolerations = "dedicated=seatunnel:NoSchedule"
   # worker.tolerations = "dedicated=seatunnel:NoSchedule"
+  #
+  # Keep common kubernetes.* settings in this file. Pass one-off specials with -D, for example:
+  #   -Dkubernetes.conf-dir=/path/to/myconf
+  # When using kubernetes.conf-dir, mount job.conf outside <seatunnel-home>/config (for example
+  # /opt/seatunnel/jobs/job.conf); conf-dir covers the whole config/ directory and conflicts with
+  # a mount under that path.
+  # Do not add a spark-defaults-style default conf file; Application Mode has no such file.
 }

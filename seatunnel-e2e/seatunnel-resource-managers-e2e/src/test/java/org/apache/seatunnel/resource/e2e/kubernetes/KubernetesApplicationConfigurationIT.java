@@ -17,10 +17,14 @@
 
 package org.apache.seatunnel.resource.e2e.kubernetes;
 
+import org.apache.seatunnel.engine.common.config.spec.ApplicationSpecification;
 import org.apache.seatunnel.engine.common.runtime.ApplicationStatus;
 import org.apache.seatunnel.resource.kubernetes.client.KubernetesApplicationClient;
+import org.apache.seatunnel.resource.kubernetes.config.KubernetesOptions;
+import org.apache.seatunnel.resource.kubernetes.kubeclient.ConfDirFiles;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.testcontainers.shaded.org.awaitility.Awaitility;
 
 import io.kubernetes.client.openapi.models.V1ConfigMap;
@@ -30,12 +34,18 @@ import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1Service;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies Secret, ConfigMap and job-configuration sources in a disposable K3s cluster. */
@@ -335,6 +345,93 @@ public class KubernetesApplicationConfigurationIT extends AbstractKubernetesAppl
             }
             assertNotNull(core.readNamespacedSecret(REFERENCE_SECRET, namespace, null));
             assertNotNull(core.readNamespacedConfigMap(RUNTIME_CONFIG_MAP, namespace, null));
+        }
+    }
+
+    @Test
+    void confDirPackagesImmutableConfigMapMountedOnMasterAndWorker(@TempDir Path confDir)
+            throws Exception {
+        writeConfDirFixture(confDir);
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(KubernetesOptions.CONF_DIR.key(), confDir.toAbsolutePath().toString());
+        ApplicationSpecification specification = specification("configuration-conf-dir");
+        try (KubernetesApplicationClient application =
+                deployApplication(specification, "configuration-conf-dir", overrides)) {
+            try {
+                awaitWorkersRunning(application, 1);
+                V1Pod master = masterPod(application);
+                assertTrue(mountedReadOnly(master, "/opt/seatunnel/config"));
+                assertEquals(
+                        "/opt/seatunnel/config",
+                        environment(master, "SEATUNNEL_CONF_DIR").getValue());
+                String confMapName = ConfDirFiles.configMapName(application.getClusterId());
+                V1ConfigMap confMap = core.readNamespacedConfigMap(confMapName, namespace, null);
+                assertEquals(Boolean.TRUE, confMap.getImmutable());
+                assertFalse(confMap.getMetadata().getOwnerReferences().isEmpty());
+                assertTrue(confMap.getData().containsKey("seatunnel.yaml"));
+                assertTrue(confMap.getData().containsKey("jvm_options"));
+                for (V1Pod worker : workers(application)) {
+                    assertTrue(mountedReadOnly(worker, "/opt/seatunnel/config"));
+                    assertEquals(
+                            "/opt/seatunnel/config",
+                            environment(worker, "SEATUNNEL_CONF_DIR").getValue());
+                }
+                awaitStatus(application, ApplicationStatus.SUCCEEDED);
+            } finally {
+                cancelAndAwait(application);
+            }
+            Awaitility.await()
+                    .atMost(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .untilAsserted(
+                            () ->
+                                    assertTrue(
+                                            missing(
+                                                    () ->
+                                                            core.readNamespacedConfigMap(
+                                                                    ConfDirFiles.configMapName(
+                                                                            application
+                                                                                    .getClusterId()),
+                                                                    namespace,
+                                                                    null))));
+        }
+    }
+
+    @Test
+    void confDirOversizedPayloadFailsBeforeCreatingResources(@TempDir Path confDir)
+            throws Exception {
+        writeConfDirFixture(confDir);
+        Files.write(
+                confDir.resolve("filler.txt"),
+                ("x".repeat(1_100_000)).getBytes(StandardCharsets.UTF_8));
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(KubernetesOptions.CONF_DIR.key(), confDir.toAbsolutePath().toString());
+        ApplicationSpecification specification = specification("configuration-conf-dir");
+        IllegalArgumentException failure =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                deployApplication(
+                                        specification, "configuration-conf-dir", overrides));
+        assertTrue(
+                failure.getMessage().contains(KubernetesOptions.CONF_DIR_MAX_SIZE.key()),
+                failure.getMessage());
+        assertTrue(failure.getMessage().contains("payload total"), failure.getMessage());
+    }
+
+    private static void writeConfDirFixture(Path confDir) throws Exception {
+        Files.write(
+                confDir.resolve("seatunnel.yaml"),
+                Files.readAllBytes(suiteFile("seatunnel.yaml").toPath()));
+        for (String name :
+                new String[] {
+                    "log4j2_client.properties",
+                    "jvm_options",
+                    "jvm_master_options",
+                    "jvm_worker_options"
+                }) {
+            Files.write(
+                    confDir.resolve(name),
+                    distributionConfig(name).getBytes(StandardCharsets.UTF_8));
         }
     }
 }

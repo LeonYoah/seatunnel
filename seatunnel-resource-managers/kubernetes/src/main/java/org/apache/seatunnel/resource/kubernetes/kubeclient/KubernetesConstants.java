@@ -144,6 +144,12 @@ public final class KubernetesConstants {
 
     public static final String APPLICATION_VOLUME = "application";
     public static final String CONFIG_VOLUME = "seatunnel-config";
+    public static final String CONF_DIR_VOLUME = "seatunnel-conf-dir";
+    public static final String CONF_DIR_CONFIG_MAP_SUFFIX = "-conf-map";
+    public static final int CONF_DIR_FILE_MODE = 0644;
+    public static final long CONFIG_MAP_MAX_SIZE_DEFAULT = 1048576L;
+    public static final long CONFIG_MAP_MAX_SIZE_LIMIT = 1048576L;
+    public static final int DNS_LABEL_MAX_LENGTH = 63;
     public static final String CHECKPOINT_VOLUME = "checkpoints";
 
     /** Main container identity, paths, and environment exposed to the application entrypoint. */
@@ -154,6 +160,7 @@ public final class KubernetesConstants {
 
     public static final String MASTER_HOST_ENV = "SEATUNNEL_APPLICATION_MASTER_HOST";
     public static final String SEATUNNEL_HOME_ENV = "SEATUNNEL_HOME";
+    public static final String SEATUNNEL_CONF_DIR_ENV = "SEATUNNEL_CONF_DIR";
 
     /** Kubernetes resource keys and units used for pod requests and limits. */
     public static final String MEMORY_RESOURCE = "memory";

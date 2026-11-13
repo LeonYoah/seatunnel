@@ -128,6 +128,8 @@ public final class KubernetesApplicationConfig {
     private final Map<String, String> workerNodeSelector;
     private final List<KubernetesToleration> masterTolerations;
     private final List<KubernetesToleration> workerTolerations;
+    private final String confDir;
+    private final long configMapMaxSize;
 
     private KubernetesApplicationConfig(
             ApplicationSpecification specification, ReadonlyConfig options) {
@@ -185,6 +187,10 @@ public final class KubernetesApplicationConfig {
                 KubernetesToleration.parse(
                         KubernetesOptions.WORKER_TOLERATIONS.key(),
                         options.get(KubernetesOptions.WORKER_TOLERATIONS));
+        this.confDir = resolveConfDir(options);
+        this.configMapMaxSize = resolveConfigMapMaxSize(confDir != null, rawOptions);
+        validateConfDirConflicts();
+        validateConfDirRequiredFiles();
     }
 
     /**
@@ -384,6 +390,11 @@ public final class KubernetesApplicationConfig {
                             : KubernetesConstants.ENV_FROM_CONFIGMAP,
                     reference.getName());
         }
+        if (confDir != null) {
+            properties.setProperty(KubernetesOptions.CONF_DIR.key(), CONF_DIR_MOUNTED);
+        }
+        properties.setProperty(
+                KubernetesOptions.CONF_DIR_MAX_SIZE.key(), Long.toString(configMapMaxSize));
         writeConfigMaps(properties);
         if (checkpointPvc != null) {
             properties.setProperty(KubernetesOptions.CHECKPOINT_PVC.key(), checkpointPvc);
@@ -533,9 +544,11 @@ public final class KubernetesApplicationConfig {
         Map<String, String> createdNames = new LinkedHashMap<>();
         Map<String, Map<String, String>> data = new LinkedHashMap<>();
         Map<String, Map<String, String>> mounts = new LinkedHashMap<>();
+        Set<String> declared = OptionUtil.getDeclaredOptionKeys(KubernetesOptions.class);
         for (Map.Entry<String, String> option : options.entrySet()) {
             String key = option.getKey();
-            if (!key.startsWith(KubernetesConstants.CONFIG_MAP_PREFIX)) {
+            if (!key.startsWith(KubernetesConstants.CONFIG_MAP_PREFIX) || declared.contains(key)) {
+                // Skip declared options that share the kubernetes.configmap. prefix.
                 continue;
             }
             String remainder = key.substring(KubernetesConstants.CONFIG_MAP_PREFIX.length());
@@ -676,6 +689,198 @@ public final class KubernetesApplicationConfig {
                 properties.setProperty(
                         prefix + "." + SECTION_MOUNT + "." + mount.getKey(), mount.getValue());
             }
+        }
+    }
+
+    /** @return whether {@code kubernetes.conf-dir} was set for this application */
+    public boolean isConfDirEnabled() {
+        return confDir != null;
+    }
+
+    /** Absolute container path of the distribution config directory covered by conf-dir. */
+    public String confDirectory() {
+        return seatunnelHome.endsWith("/") ? seatunnelHome + "config" : seatunnelHome + "/config";
+    }
+
+    /**
+     * Marker written into the localized specification so workers mount conf-dir without the
+     * submitter path.
+     */
+    static final String CONF_DIR_MOUNTED = "__mounted__";
+
+    private static String resolveConfDir(ReadonlyConfig options) {
+        String value = options.get(KubernetesOptions.CONF_DIR);
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        if (CONF_DIR_MOUNTED.equals(value)) {
+            return value;
+        }
+        Path path = Paths.get(value);
+        if (!Files.isDirectory(path)) {
+            throw new IllegalArgumentException(
+                    KubernetesOptions.CONF_DIR.key() + " must be an existing directory: " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Resolves {@code kubernetes.conf-dir.max-size} from the raw option map.
+     *
+     * <p>The option only applies when {@code kubernetes.conf-dir} is set. Invalid or out-of-range
+     * values fail submission in that case; otherwise they are ignored with a warning so a stray
+     * max-size does not block submissions that never package a conf-dir ConfigMap.
+     */
+    private static long resolveConfigMapMaxSize(boolean confDirEnabled, Map<String, String> raw) {
+        String key = KubernetesOptions.CONF_DIR_MAX_SIZE.key();
+        String rawValue = raw.get(key);
+        if (rawValue == null || rawValue.trim().isEmpty()) {
+            return KubernetesConstants.CONFIG_MAP_MAX_SIZE_DEFAULT;
+        }
+        final long size;
+        try {
+            size = Long.parseLong(rawValue.trim());
+        } catch (NumberFormatException failure) {
+            if (!confDirEnabled) {
+                log.warn(
+                        "Ignoring invalid {}='{}' because {} is unset; expected an integer between 1 and {}",
+                        key,
+                        rawValue,
+                        KubernetesOptions.CONF_DIR.key(),
+                        KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT);
+                return KubernetesConstants.CONFIG_MAP_MAX_SIZE_DEFAULT;
+            }
+            throw new IllegalArgumentException(
+                    key
+                            + " has invalid value '"
+                            + rawValue
+                            + "'; expected an integer between 1 and "
+                            + KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT,
+                    failure);
+        }
+        if (size < 1 || size > KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT) {
+            if (!confDirEnabled) {
+                log.warn(
+                        "Ignoring out-of-range {}={} because {} is unset; valid range is 1..{}",
+                        key,
+                        size,
+                        KubernetesOptions.CONF_DIR.key(),
+                        KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT);
+                return KubernetesConstants.CONFIG_MAP_MAX_SIZE_DEFAULT;
+            }
+            throw new IllegalArgumentException(
+                    key
+                            + "="
+                            + size
+                            + " must be between 1 and "
+                            + KubernetesConstants.CONFIG_MAP_MAX_SIZE_LIMIT);
+        }
+        return size;
+    }
+
+    private void validateConfDirConflicts() {
+        if (confDir == null) {
+            return;
+        }
+        String covered = confDirectory();
+        for (KubernetesConfigMapEntry entry : configMaps) {
+            for (String path : entry.getMountPaths().values()) {
+                if (path.equals(covered)
+                        || path.startsWith(covered + "/")
+                        || covered.startsWith(path + "/")) {
+                    throw new IllegalArgumentException(
+                            KubernetesOptions.CONF_DIR.key()
+                                    + " mounts the whole directory "
+                                    + covered
+                                    + " and conflicts with "
+                                    + KubernetesConstants.CONFIG_MAP_OPTION
+                                    + " mount path "
+                                    + path
+                                    + "; use either kubernetes.conf-dir or a single-file "
+                                    + "configmap.*.mount into the same path, not both");
+                }
+            }
+        }
+    }
+
+    /**
+     * When {@code kubernetes.conf-dir} is set, the mount covers {@code <seatunnel-home>/config}, so
+     * every {@code kubernetes.*-file} path that resolves under that directory must exist as a
+     * first-level file in the local conf-dir (options set to {@code disabled} are skipped).
+     */
+    private void validateConfDirRequiredFiles() {
+        if (confDir == null || CONF_DIR_MOUNTED.equals(confDir)) {
+            return;
+        }
+        Path localDir = Paths.get(confDir);
+        String covered = confDirectory();
+        requireConfDirFile(localDir, covered, KubernetesOptions.JVM_OPTIONS.key(), jvmOptions);
+        requireConfDirFile(
+                localDir, covered, KubernetesOptions.MASTER_JVM_OPTIONS.key(), masterJvmOptions);
+        requireConfDirFile(
+                localDir, covered, KubernetesOptions.WORKER_JVM_OPTIONS.key(), workerJvmOptions);
+        requireConfDirFile(
+                localDir, covered, KubernetesOptions.LOG4J_CONFIG_FILE.key(), log4jConfigFile);
+        requireConfDirFile(
+                localDir,
+                covered,
+                KubernetesOptions.MASTER_HAZELCAST_CONFIG.key(),
+                masterHazelcastConfig);
+        requireConfDirFile(
+                localDir,
+                covered,
+                KubernetesOptions.WORKER_HAZELCAST_CONFIG.key(),
+                workerHazelcastConfig);
+        requireConfDirFile(
+                localDir,
+                covered,
+                KubernetesOptions.SEATUNNEL_CONFIG_FILE.key(),
+                seatunnelConfigFile);
+        requireConfDirFile(
+                localDir, covered, KubernetesOptions.JOB_CONFIG_FILE.key(), jobConfigFile);
+    }
+
+    private static void requireConfDirFile(
+            Path localDir, String coveredDirectory, String optionKey, String containerPath) {
+        if (containerPath == null) {
+            return;
+        }
+        if (!containerPath.equals(coveredDirectory)
+                && !containerPath.startsWith(coveredDirectory + "/")) {
+            return;
+        }
+        String relative = containerPath.substring(coveredDirectory.length());
+        if (relative.startsWith("/")) {
+            relative = relative.substring(1);
+        }
+        if (relative.isEmpty() || relative.contains("/")) {
+            throw new IllegalArgumentException(
+                    optionKey
+                            + "="
+                            + containerPath
+                            + " resolves under kubernetes.conf-dir mount "
+                            + coveredDirectory
+                            + " but is not a first-level file name; conf-dir only packages"
+                            + " first-level files. Use a bare file name under "
+                            + coveredDirectory
+                            + " or a path outside that directory.");
+        }
+        Path localFile = localDir.resolve(relative);
+        if (!Files.isRegularFile(localFile)) {
+            throw new IllegalArgumentException(
+                    "kubernetes.conf-dir is missing required file '"
+                            + relative
+                            + "' referenced by "
+                            + optionKey
+                            + "="
+                            + containerPath
+                            + ". Add that file under "
+                            + localDir.toAbsolutePath()
+                            + ", set "
+                            + optionKey
+                            + " to disabled (when supported), or point it at a path outside "
+                            + coveredDirectory
+                            + ".");
         }
     }
 
