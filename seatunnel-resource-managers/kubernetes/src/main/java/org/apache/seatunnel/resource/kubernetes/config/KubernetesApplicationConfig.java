@@ -20,7 +20,9 @@ package org.apache.seatunnel.resource.kubernetes.config;
 import org.apache.seatunnel.api.configuration.Option;
 import org.apache.seatunnel.api.configuration.ReadonlyConfig;
 import org.apache.seatunnel.api.configuration.util.OptionUtil;
+import org.apache.seatunnel.engine.common.config.ConfigProvider;
 import org.apache.seatunnel.engine.common.config.SeatunnelApplicationConfig;
+import org.apache.seatunnel.engine.common.config.server.HttpConfig;
 import org.apache.seatunnel.engine.common.config.spec.ApplicationSpecification;
 import org.apache.seatunnel.resource.kubernetes.kubeclient.KubernetesConstants;
 
@@ -128,6 +130,9 @@ public final class KubernetesApplicationConfig {
     private final Map<String, String> workerNodeSelector;
     private final List<KubernetesToleration> masterTolerations;
     private final List<KubernetesToleration> workerTolerations;
+    private final boolean httpEnabled;
+    private final int httpPort;
+    private final String httpContextPath;
 
     private KubernetesApplicationConfig(
             ApplicationSpecification specification, ReadonlyConfig options) {
@@ -185,6 +190,14 @@ public final class KubernetesApplicationConfig {
                 KubernetesToleration.parse(
                         KubernetesOptions.WORKER_TOLERATIONS.key(),
                         options.get(KubernetesOptions.WORKER_TOLERATIONS));
+        HttpConfig http = resolveHttpConfig();
+        this.httpEnabled = http.isEnabled();
+        this.httpPort = http.getPort();
+        this.httpContextPath = http.getContextPath();
+        if (httpEnabled && (httpPort < 1 || httpPort > 65535)) {
+            throw new IllegalArgumentException(
+                    "http.port=" + httpPort + " must be between 1 and 65535");
+        }
     }
 
     /**
@@ -677,6 +690,52 @@ public final class KubernetesApplicationConfig {
                         prefix + "." + SECTION_MOUNT + "." + mount.getKey(), mount.getValue());
             }
         }
+    }
+
+    /** HTTP container/Service port when enabled; {@code null} when disabled. */
+    public Integer httpContainerPort() {
+        return httpEnabled ? httpPort : null;
+    }
+
+    /**
+     * Resolves Master HTTP from owned ConfigMap data mounted at {@code
+     * kubernetes.seatunnel-config-file}, that file when it exists locally, otherwise {@link
+     * ConfigProvider}. Empty owned-data placeholders are skipped.
+     */
+    private HttpConfig resolveHttpConfig() {
+        for (KubernetesConfigMapEntry entry : configMaps) {
+            if (entry.isReference()) {
+                continue;
+            }
+            for (Map.Entry<String, String> mount : entry.getMountPaths().entrySet()) {
+                if (!seatunnelConfigFile.equals(mount.getValue())) {
+                    continue;
+                }
+                String data = entry.getData().get(mount.getKey());
+                if (data != null && !data.isEmpty()) {
+                    return ConfigProvider.locateAndGetSeaTunnelConfigFromString(data)
+                            .getEngineConfig()
+                            .getHttpConfig();
+                }
+            }
+        }
+        Path configured = Paths.get(seatunnelConfigFile);
+        if (Files.isRegularFile(configured)) {
+            try {
+                String yaml = new String(Files.readAllBytes(configured), StandardCharsets.UTF_8);
+                return ConfigProvider.locateAndGetSeaTunnelConfigFromString(yaml)
+                        .getEngineConfig()
+                        .getHttpConfig();
+            } catch (IOException failure) {
+                throw new IllegalArgumentException(
+                        "Failed to read "
+                                + KubernetesOptions.SEATUNNEL_CONFIG_FILE.key()
+                                + ": "
+                                + configured,
+                        failure);
+            }
+        }
+        return ConfigProvider.locateAndGetSeaTunnelConfig().getEngineConfig().getHttpConfig();
     }
 
     private void validateApplicationSecret() {

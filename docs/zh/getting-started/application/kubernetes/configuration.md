@@ -268,6 +268,12 @@ kubernetes {
 `${VAR}` 注入。
 :::
 
+## Master HTTP（seatunnel.yaml）
+
+Master 跟随 `seatunnel.yaml`。发行包默认 `enable-http: true`、`port: 8080`，会在 Master 和 headless Service 上增加 `http` 端口。Worker 保持关闭 HTTP。
+
+在该文件中设置 `enable-http: false` 即可关闭。
+
 ## ConfigMap 与运行时文件
 
 每个 `kubernetes.configmap.<entry>` 条目都会在 Master 和 Worker Pod 中按 `subPath` 挂载一个或

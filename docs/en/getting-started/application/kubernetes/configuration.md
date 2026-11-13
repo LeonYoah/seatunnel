@@ -283,6 +283,12 @@ Keep connector credentials out of ConfigMaps: they are not confidential. Use a S
 `kubernetes.env`/`${VAR}` when the job needs them.
 :::
 
+## Master HTTP (seatunnel.yaml)
+
+The master follows `seatunnel.yaml`. The distribution default is `enable-http: true` and `port: 8080`, which adds an `http` port on the master and the headless Service. Workers keep HTTP off.
+
+Set `enable-http: false` in that file to disable it.
+
 ## ConfigMaps and runtime files
 
 Every `kubernetes.configmap.<entry>` entry mounts one or more files through `subPath` in both the
