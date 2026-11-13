@@ -17,6 +17,8 @@
 
 package io.debezium.connector.oracle.logminer.parser;
 
+import io.debezium.connector.oracle.logminer.events.LogMinerEventRow;
+import io.debezium.util.Strings;
 import oracle.sql.RAW;
 
 import java.sql.SQLException;
@@ -24,11 +26,16 @@ import java.sql.SQLException;
 /**
  * Parses one LogMiner {@code XML_WRITE} redo statement.
  *
- * <p>Out-of-line documents arrive as {@code HEXTORAW} chunks. Those chunks are returned as raw
- * bytes. A multi-byte UTF-8 character can be split across chunks, so the bytes are decoded once
- * when the document is assembled. Inline documents arrive as a quoted SQL string and are already
- * characters. Oracle 11g and 21c also emit the document text directly, without the {@code XML_REDO}
- * preamble.
+ * <p>Follows Debezium {@code XmlWriteParser}: {@code XML_REDO := NULL} or blank SQL is null; when
+ * {@code INFO} ends with {@code not re-executable} the payload is {@code XML_REDO :=} / {@code
+ * HEXTORAW}; otherwise {@code SQL_REDO} is the document text (11g and 21c). {@code HEXTORAW} chunks
+ * stay bytes so a UTF-8 character split across writes is decoded once at merge.
+ *
+ * @see <a
+ *     href="https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/XmlWriteParser.java">Debezium
+ *     XmlWriteParser</a>
+ * @see <a
+ *     href="https://github.com/debezium/debezium/commit/08662a418949deb3500a834dd232cef608c19c9e">debezium/dbz#1373</a>
  */
 public final class XmlWriteParser {
 
@@ -37,34 +44,39 @@ public final class XmlWriteParser {
 
     private XmlWriteParser() {}
 
-    public static Payload parse(String sql) throws SQLException {
-        if (sql == null) {
-            throw new IllegalStateException("XML write operation does not contain document text");
-        }
-        String body = sql.trim();
-        if (!body.startsWith(XML_WRITE_PREAMBLE)) {
-            // 11g and 21c LogMiner put the document text itself in SQL_REDO.
-            return Payload.text(sql, sql.codePointCount(0, sql.length()));
-        }
-        if (XML_WRITE_PREAMBLE_NULL.equals(body)) {
+    public static Payload parse(LogMinerEventRow event) throws SQLException {
+        return parse(event.getRedoSql(), event.getInfo());
+    }
+
+    public static Payload parse(String redoSql, String info) throws SQLException {
+        if (XML_WRITE_PREAMBLE_NULL.equals(redoSql) || Strings.isNullOrBlank(redoSql)) {
             return Payload.nullValue();
         }
-        if (body.charAt(XML_WRITE_PREAMBLE.length()) == '\'') {
-            int lastQuoteIndex = body.lastIndexOf('\'');
+        if (XmlParserUtils.isXmlSerializedAsBinary(info)) {
+            return parseBinary(redoSql);
+        }
+        return Payload.text(redoSql, redoSql.length());
+    }
+
+    private static Payload parseBinary(String redoSql) throws SQLException {
+        if (!redoSql.startsWith(XML_WRITE_PREAMBLE)) {
+            throw new IllegalStateException(
+                    "XML write operation does not start with XML_REDO preamble");
+        }
+        if (redoSql.charAt(XML_WRITE_PREAMBLE.length()) == '\'') {
+            int lastQuoteIndex = redoSql.lastIndexOf('\'');
             if (lastQuoteIndex == -1) {
                 throw new IllegalStateException("Failed to find end of XML document");
             }
-            String xml =
-                    LobWriteParser.unescapeLiteral(
-                            body.substring(XML_WRITE_PREAMBLE.length() + 1, lastQuoteIndex));
-            return Payload.text(xml, lengthOf(body));
+            String xml = redoSql.substring(XML_WRITE_PREAMBLE.length() + 1, lastQuoteIndex);
+            return Payload.text(xml, lengthOf(redoSql));
         }
 
-        int lastParenIndex = body.lastIndexOf(')');
+        int lastParenIndex = redoSql.lastIndexOf(')');
         if (lastParenIndex == -1) {
             throw new IllegalStateException("Failed to find end of XML document");
         }
-        String xmlHex = body.substring(XML_WRITE_PREAMBLE.length(), lastParenIndex + 1);
+        String xmlHex = redoSql.substring(XML_WRITE_PREAMBLE.length(), lastParenIndex + 1);
         if (!xmlHex.startsWith("HEXTORAW('") || !xmlHex.endsWith(")")) {
             throw new IllegalStateException("Invalid HEXTORAW XML decoded data");
         }
@@ -74,7 +86,7 @@ public final class XmlWriteParser {
             // Oracle sometimes omits the closing quote before the final parenthesis.
             xmlHex = xmlHex.substring(10, xmlHex.length() - 1);
         }
-        return Payload.bytes(RAW.hexString2Bytes(xmlHex), lengthOf(body));
+        return Payload.bytes(RAW.hexString2Bytes(xmlHex), lengthOf(redoSql));
     }
 
     private static int lengthOf(String sql) {

@@ -18,6 +18,7 @@
 package io.debezium.connector.oracle.logminer.parser;
 
 import io.debezium.DebeziumException;
+import io.debezium.util.Strings;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -25,53 +26,56 @@ import java.util.regex.Pattern;
 /**
  * Parses the SQL text LogMiner reconstructs for one {@code LOB_WRITE}.
  *
- * <p>The reconstructed statement assigns a SQL string literal or {@code HEXTORAW} buffer and then
- * calls {@code dbms_lob.write}. A literal apostrophe is written twice on some Oracle versions; the
- * {@code amount} argument still counts unescaped characters.
+ * <p>Aligned with Debezium {@code LobWriteParser}: drop the SQL quotes, then collapse a doubled
+ * apostrophe so {@code TransactionCommitConsumer} does not truncate the chunk.
+ *
+ * @see <a
+ *     href="https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/LobWriteParser.java">Debezium
+ *     LobWriteParser</a>
+ * @see <a
+ *     href="https://github.com/debezium/debezium/commit/4d826b4e278a98233189dd0d2371b6c01cb11c0b">DBZ-8924</a>
  */
 public final class LobWriteParser {
 
-    private static final Pattern LOB_WRITE_SQL_PATTERN =
+    private static final Pattern SQL_PATTERN =
             Pattern.compile(
                     "(?s).* := ((?:HEXTORAW\\()?'.*'(?:\\))?);\\s*dbms_lob.write\\([^,]+,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,[^,]+\\);.*");
 
     private LobWriteParser() {}
 
-    public static LobWrite parse(String sql) {
-        if (sql == null) {
+    /**
+     * Parses the {@code LOB_WRITE} redo SQL.
+     *
+     * @param redoSql the SQL to be parsed
+     * @return the parsed details, or {@code null} when the SQL is empty
+     */
+    public static LobWrite parse(String redoSql) {
+        if (Strings.isNullOrEmpty(redoSql)) {
             return null;
         }
-        Matcher matcher = LOB_WRITE_SQL_PATTERN.matcher(sql.trim());
+
+        Matcher matcher = SQL_PATTERN.matcher(redoSql.trim());
         if (!matcher.matches()) {
-            throw new DebeziumException("Unable to parse unsupported LOB_WRITE SQL: " + sql);
+            throw new DebeziumException("Unable to parse unsupported LOB_WRITE SQL: " + redoSql);
         }
+
         String data = matcher.group(1);
         if (data.startsWith("'")) {
-            // LogMiner quotes the buffer as a SQL literal. A literal apostrophe is written twice.
-            data = unescapeLiteral(data.substring(1, data.length() - 1));
+            // string data; drop the quotes
+            data = data.substring(1, data.length() - 1);
         }
         int length = Integer.parseInt(matcher.group(2));
-        int offset = Integer.parseInt(matcher.group(3)) - 1;
-        return new LobWrite(offset, length, data);
-    }
+        int offset = Integer.parseInt(matcher.group(3)) - 1; // Oracle uses 1-based offsets
 
-    /**
-     * Collapses the doubled quotes of a SQL string literal. A single quote that LogMiner did not
-     * escape is left unchanged.
-     */
-    static String unescapeLiteral(String data) {
-        if (data.indexOf('\'') < 0) {
-            return data;
+        // Double check whether Oracle may have escaped single-quotes in the SQL data.
+        // This avoids unintended truncation during the LOB merge phase during the commit
+        // logic handled by TransactionCommitConsumer.
+        // https://github.com/debezium/debezium/blob/eaf46bdf7ae7431398adceeca4762f120a3b3107/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/logminer/parser/LobWriteParser.java
+        if (data.contains("''")) {
+            data = data.replaceAll("''", "'");
         }
-        StringBuilder builder = new StringBuilder(data.length());
-        for (int i = 0; i < data.length(); i++) {
-            char current = data.charAt(i);
-            builder.append(current);
-            if (current == '\'' && i + 1 < data.length() && data.charAt(i + 1) == '\'') {
-                i++;
-            }
-        }
-        return builder.toString();
+
+        return new LobWrite(offset, length, data);
     }
 
     public static final class LobWrite {

@@ -35,6 +35,8 @@ import java.util.Arrays;
 public class XmlWriteAssemblyTest {
 
     private static final TableId TABLE = TableId.parse("DEBEZIUM.XML_TEST");
+    /** Debezium treats INFO ending with this marker as binary XML_WRITE. */
+    private static final String BINARY_INFO = "XML DOC write not re-executable";
 
     @Test
     public void decodesMultiByteCharactersSplitAcrossHexChunks() throws Exception {
@@ -66,8 +68,8 @@ public class XmlWriteAssemblyTest {
     public void parsesDocumentTextWithoutTheXmlRedoPreamble() throws Exception {
         String first = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><note>it's track</note>";
         String second = "<title>现场 \uD83D\uDE00</title>";
-        XmlWriteParser.Payload start = XmlWriteParser.parse(first);
-        XmlWriteParser.Payload rest = XmlWriteParser.parse(second);
+        XmlWriteParser.Payload start = XmlWriteParser.parse(first, "");
+        XmlWriteParser.Payload rest = XmlWriteParser.parse(second, "");
         Assertions.assertEquals(first, start.getText());
         Assertions.assertNull(start.getBytes());
 
@@ -79,25 +81,40 @@ public class XmlWriteAssemblyTest {
 
     @Test
     public void parsesInlineXmlAsTextAndNullAsNull() throws Exception {
-        XmlWriteParser.Payload text = XmlWriteParser.parse("XML_REDO := '<a>数符癸</a>':10");
+        XmlWriteParser.Payload text =
+                XmlWriteParser.parse("XML_REDO := '<a>数符癸</a>':10", BINARY_INFO);
         Assertions.assertEquals("<a>数符癸</a>", text.getText());
         Assertions.assertNull(text.getBytes());
         Assertions.assertEquals(10, text.getLength());
 
-        XmlWriteParser.Payload nullXml = XmlWriteParser.parse("XML_REDO := NULL");
+        XmlWriteParser.Payload nullXml = XmlWriteParser.parse("XML_REDO := NULL", "");
         Assertions.assertTrue(nullXml.isNullValue());
         Assertions.assertNull(nullXml.getText());
         Assertions.assertNull(nullXml.getBytes());
     }
 
     @Test
+    public void usesLogMinerInfoToChooseBinaryXmlWriteLikeDebezium() throws Exception {
+        byte[] bytes = "é".getBytes(StandardCharsets.UTF_8);
+        String sql = hexSql(bytes, true);
+
+        XmlWriteParser.Payload asDocument = XmlWriteParser.parse(sql, "");
+        Assertions.assertEquals(sql, asDocument.getText());
+        Assertions.assertNull(asDocument.getBytes());
+
+        XmlWriteParser.Payload binary = XmlWriteParser.parse(sql, BINARY_INFO);
+        Assertions.assertArrayEquals(bytes, binary.getBytes());
+        Assertions.assertNull(binary.getText());
+    }
+
+    @Test
     public void parsesHexChunksAsBytesIncludingTheUnclosedQuoteForm() throws Exception {
         byte[] bytes = "é".getBytes(StandardCharsets.UTF_8);
-        XmlWriteParser.Payload quoted = XmlWriteParser.parse(hexSql(bytes, true));
+        XmlWriteParser.Payload quoted = XmlWriteParser.parse(hexSql(bytes, true), BINARY_INFO);
         Assertions.assertArrayEquals(bytes, quoted.getBytes());
         Assertions.assertNull(quoted.getText());
 
-        XmlWriteParser.Payload unclosed = XmlWriteParser.parse(hexSql(bytes, false));
+        XmlWriteParser.Payload unclosed = XmlWriteParser.parse(hexSql(bytes, false), BINARY_INFO);
         Assertions.assertArrayEquals(bytes, unclosed.getBytes());
     }
 
@@ -116,8 +133,9 @@ public class XmlWriteAssemblyTest {
                         + new String(right, StandardCharsets.UTF_8);
         Assertions.assertTrue(decodedApart.indexOf('\uFFFD') >= 0);
 
-        XmlWriteParser.Payload leftPayload = XmlWriteParser.parse(hexSql(left, true));
-        XmlWriteParser.Payload rightPayload = XmlWriteParser.parse(hexSql(right, true));
+        XmlWriteParser.Payload leftPayload = XmlWriteParser.parse(hexSql(left, true), BINARY_INFO);
+        XmlWriteParser.Payload rightPayload =
+                XmlWriteParser.parse(hexSql(right, true), BINARY_INFO);
         XmlUnderConstruction xml = new XmlUnderConstruction();
         xml.add(new XmlFragment(bytesEvent(leftPayload.getBytes())));
         xml.add(new XmlFragment(bytesEvent(rightPayload.getBytes())));

@@ -848,7 +848,7 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
 
     private XmlWriteEvent getXmlWriteEventFromRow(LogMinerEventRow row) {
         try {
-            XmlWriteParser.Payload payload = XmlWriteParser.parse(row.getRedoSql());
+            XmlWriteParser.Payload payload = XmlWriteParser.parse(row);
             if (payload.isNullValue()) {
                 return new XmlWriteEvent(row, (String) null, 0);
             }
