@@ -133,7 +133,8 @@ roleRef:
 kubectl apply -f application-rbac.yaml
 ```
 
-请把提交身份 RoleBinding 的 subjects 换成运行 `bin/seatunnel-application.sh` 的身份。
+请把提交身份 RoleBinding 的 subjects 换成运行 `bin/seatunnel-application.sh` 的身份。如果设置
+`application.master.http-port`，还需要给 Master Role 增加 Services 的 `patch` 权限。
 
 ## 3. 准备部署配置
 

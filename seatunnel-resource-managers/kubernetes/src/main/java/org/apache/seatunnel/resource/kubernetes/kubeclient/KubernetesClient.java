@@ -107,6 +107,8 @@ public interface KubernetesClient extends AutoCloseable {
      */
     KubernetesWatch watchPods(String selector, PodWatchCallback callback);
 
+    void publishMasterHttpService(String name, int servicePort, int targetPort);
+
     /**
      * Deletes one worker Pod and accepts an already absent Pod.
      *

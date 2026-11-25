@@ -81,6 +81,7 @@ Command-line overrides (`-Dkey=value`) may be visible to other users on the subm
 | `application.master.memory-mb` | int | no | `1024` | Master memory request and limit in MiB. |
 | `application.master.cpu-cores` | int | no | `1` | Master CPU request and limit. |
 | `application.master.port` | int | no | `5801` | Master Hazelcast TCP port. |
+| `application.master.http-port` | int | no | - | Master HTTP Service port published by Kubernetes. Valid values are 1–65535 and must differ from `application.master.port`. It only controls Service publication and never changes the engine listener; unset does not publish HTTP. |
 | `application.startup-timeout-millis` | long | no | `120000` | Applied to worker creation and registration on the master and to client connection setup; submission does not wait for master startup. |
 
 :::note
@@ -115,6 +116,7 @@ The **master Pod** runs with `kubernetes.service-account` and needs:
 | --- | --- | --- |
 | Pods | `create`, `list`, `watch`, `delete`, `deletecollection` | always; `create`/`delete`/`deletecollection` manage worker Pods, `watch` reports a lost worker |
 | Jobs | `get` | always; reads the owner Job |
+| Services | `patch` | only with `application.master.http-port`; appends the HTTP Service port after the master listener binds |
 
 The **submitting identity** runs `bin/seatunnel-application.sh` and needs:
 
@@ -282,6 +284,21 @@ kubernetes {
 Keep connector credentials out of ConfigMaps: they are not confidential. Use a Secret with
 `kubernetes.env`/`${VAR}` when the job needs them.
 :::
+
+## Master HTTP publication
+
+The master HTTP listener is configured only by the `seatunnel.yaml` loaded inside the master Pod.
+Application Mode does not change its `enable-http` or `port` settings.
+
+`application.master.http-port` is the Kubernetes Service `port` used to publish that endpoint. It is
+not the engine listener port. In the deployment file, `application.master.http-port = 8080` and
+`master.http-port = 8080` inside the `application` block are equivalent. After the listener starts,
+the master patches the existing headless Service: the configured value becomes the Service `port`,
+and the real bound listener port becomes the `targetPort`. The two values may differ.
+
+If `application.master.http-port` is unset, no HTTP Service port is published. If it is set while
+plaintext HTTP is disabled in `seatunnel.yaml`, application startup fails. The master ServiceAccount
+needs `patch` on Services only when this option is set.
 
 ## ConfigMaps and runtime files
 

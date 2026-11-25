@@ -222,6 +222,24 @@ final class DefaultKubernetesClient implements KubernetesClient {
         return watch;
     }
 
+    @Override
+    public void publishMasterHttpService(String name, int servicePort, int targetPort) {
+        String patch =
+                "[{\"op\":\"add\",\"path\":\"/spec/ports/-\",\"value\":{\"name\":\""
+                        + KubernetesConstants.HTTP_PORT_NAME
+                        + "\",\"port\":"
+                        + servicePort
+                        + ",\"targetPort\":"
+                        + targetPort
+                        + ",\"protocol\":\"TCP\"}}]";
+        try {
+            core.patchNamespacedService(
+                    name, namespace, new V1Patch(patch), null, null, null, null, null);
+        } catch (ApiException failure) {
+            throw wrap(failure);
+        }
+    }
+
     /**
      * Requests immediate deletion of one worker, accepting an already absent pod.
      *

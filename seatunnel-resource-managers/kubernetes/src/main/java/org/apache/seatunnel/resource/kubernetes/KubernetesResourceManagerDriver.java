@@ -117,6 +117,10 @@ public final class KubernetesResourceManagerDriver
         this.idGenerator = new IdGenerator();
     }
 
+    public void publishMasterHttp(int servicePort, int targetPort) {
+        api.publishMasterHttpService(applicationId, servicePort, targetPort);
+    }
+
     /**
      * Resolves the owner Job and starts asynchronous observation before admitting workers.
      *

@@ -175,6 +175,24 @@ public final class SeatunnelKubernetesApplicationCli {
         }
     }
 
+    private static void publishMasterHttp(
+            ApplicationSpecification specification,
+            SeaTunnelServer server,
+            KubernetesResourceManagerDriver driver) {
+        Integer servicePort = specification.getMasterHttpPort();
+        if (servicePort == null) {
+            return;
+        }
+        if (!server.getSeaTunnelConfig().getEngineConfig().getHttpConfig().isEnabled()) {
+            throw new IllegalStateException(
+                    "application.master.http-port publishes HTTP, but seatunnel.yaml does not enable the master HTTP listener");
+        }
+        int targetPort = server.getHttpPort();
+        driver.publishMasterHttp(servicePort, targetPort);
+        log.info(
+                "Published master HTTP service port {} to target port {}", servicePort, targetPort);
+    }
+
     /**
      * Runs the application job and releases driver and master resources afterwards.
      *
@@ -193,6 +211,7 @@ public final class SeatunnelKubernetesApplicationCli {
         Thread shutdown = shutdownHook(stopped);
         try {
             Runtime.getRuntime().addShutdownHook(shutdown);
+            publishMasterHttp(specification, server, driver);
             new ApplicationJobRunner(server, specification).run();
         } finally {
             removeShutdownHook(shutdown);

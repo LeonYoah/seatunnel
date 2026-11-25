@@ -80,6 +80,7 @@ Application Mode 在提交机上读取部署文件（`-a`，包含 `application.
 | `application.master.memory-mb` | int | no | `1024` | Master memory request 和 limit，单位 MiB。 |
 | `application.master.cpu-cores` | int | no | `1` | Master CPU request 和 limit。 |
 | `application.master.port` | int | no | `5801` | Master Hazelcast TCP 端口。 |
+| `application.master.http-port` | int | no | - | Kubernetes 发布 Master HTTP endpoint 的 Service `port`。合法范围是 1–65535，且不能与 `application.master.port` 相同。它只控制 Service 发布，绝不修改引擎监听配置；不设置则不发布 HTTP。 |
 | `application.startup-timeout-millis` | long | no | `120000` | 用于 Master 等待 Worker 创建和注册，以及客户端连接建立；提交本身不等待 Master 启动。 |
 
 :::note
@@ -111,6 +112,7 @@ Provider 不创建这类凭据，也不提供任意 Pod template。Connector 引
 | --- | --- | --- |
 | Pod | `create`、`list`、`watch`、`delete`、`deletecollection` | 始终需要；`create`/`delete`/`deletecollection` 管理 Worker Pod，`watch` 用于发现 Worker 丢失 |
 | Job | `get` | 始终需要；读取 owner Job |
+| Service | `patch` | 仅设置 `application.master.http-port` 时需要；Master listener 绑定后追加 HTTP Service 端口 |
 
 **提交身份** 运行 `bin/seatunnel-application.sh`，需要：
 
@@ -267,6 +269,20 @@ kubernetes {
 凭据不要放进 ConfigMap：它不具备保密性。作业需要凭据时使用 Secret + `kubernetes.env` /
 `${VAR}` 注入。
 :::
+
+## Master HTTP 发布
+
+Master HTTP listener 只由 Master Pod 内加载的 `seatunnel.yaml` 配置，Application 模式不会修改
+其中的 `enable-http` 或 `port`。
+
+`application.master.http-port` 是用于发布该 endpoint 的 Kubernetes Service `port`，不是引擎监听端口。
+部署文件中，`application.master.http-port = 8080` 与在 `application` 块内写
+`master.http-port = 8080` 等价。Listener 启动后，Master 会 patch 现有 headless Service：配置值作为
+Service `port`，真实绑定端口作为 `targetPort`。二者可以不同。
+
+不设置 `application.master.http-port` 就不发布 HTTP Service 端口；设置了它但 `seatunnel.yaml`
+未启用 plaintext HTTP，Application 启动会失败。只有设置该选项时，Master ServiceAccount 才需要
+Services 的 `patch` 权限。
 
 ## ConfigMap 与运行时文件
 

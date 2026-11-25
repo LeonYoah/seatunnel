@@ -19,6 +19,7 @@ package org.apache.seatunnel.engine.common.config;
 
 import org.apache.seatunnel.shade.com.typesafe.config.ConfigException;
 
+import org.apache.seatunnel.engine.common.config.server.ApplicationOptions;
 import org.apache.seatunnel.engine.common.config.server.CheckpointConfig;
 import org.apache.seatunnel.engine.common.config.server.CheckpointStorageConfig;
 import org.apache.seatunnel.engine.common.config.spec.ApplicationSpecification;
@@ -33,6 +34,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -205,5 +207,52 @@ class SeatunnelApplicationConfigTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> SeatunnelApplicationConfig.configure(config, "app", "", 1));
+    }
+
+    @Test
+    void masterHttpPortRoundTripsThroughLocalizedProperties() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(ApplicationOptions.MASTER_HTTP_PORT.key(), "18080");
+        ApplicationSpecification specification =
+                SeatunnelApplicationConfig.parse("env {}", options);
+        Properties properties = SeatunnelApplicationConfig.toProperties(specification);
+        assertEquals("18080", properties.getProperty(ApplicationOptions.MASTER_HTTP_PORT.key()));
+        assertEquals(
+                Integer.valueOf(18080),
+                SeatunnelApplicationConfig.fromProperties(properties).getMasterHttpPort());
+    }
+
+    @Test
+    void rejectsMasterHttpPortConflictingWithMasterPort() {
+        Map<String, String> options = new HashMap<>();
+        options.put(
+                ApplicationOptions.MASTER_HTTP_PORT.key(),
+                Integer.toString(ApplicationOptions.MASTER_PORT.defaultValue()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SeatunnelApplicationConfig.parse("env {}", options));
+    }
+
+    @Test
+    void masterKeepsHttpFromYamlWhileWorkerForceDisables() {
+        SeaTunnelConfig master = new SeaTunnelConfig();
+        master.getEngineConfig().getHttpConfig().setEnabled(true);
+        master.getEngineConfig().getHttpConfig().setPort(18080);
+        master.getEngineConfig().getHttpConfig().setEnableDynamicPort(true);
+        master.getEngineConfig().getHttpConfig().setPortRange(20);
+        SeatunnelApplicationConfig.configure(master, "unique-application", null, 2);
+        assertTrue(master.getEngineConfig().getHttpConfig().isEnabled());
+        assertEquals(18080, master.getEngineConfig().getHttpConfig().getPort());
+        assertFalse(master.getEngineConfig().getHttpConfig().isEnableDynamicPort());
+        assertEquals(100, master.getEngineConfig().getHttpConfig().getPortRange());
+
+        SeaTunnelConfig worker = new SeaTunnelConfig();
+        worker.getEngineConfig().getHttpConfig().setEnabled(true);
+        worker.getEngineConfig().getHttpConfig().setPort(18080);
+        worker.getEngineConfig().getHttpConfig().setEnableDynamicPort(true);
+        SeatunnelApplicationConfig.configure(worker, "unique-application", "master:5801", 3);
+        assertFalse(worker.getEngineConfig().getHttpConfig().isEnabled());
+        assertFalse(worker.getEngineConfig().getHttpConfig().isEnableDynamicPort());
+        assertEquals(8080, worker.getEngineConfig().getHttpConfig().getPort());
     }
 }
