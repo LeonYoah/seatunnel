@@ -33,6 +33,7 @@ import org.apache.seatunnel.engine.common.config.server.CheckpointConfig;
 import org.apache.seatunnel.engine.common.config.server.CheckpointStorageConfig;
 import org.apache.seatunnel.engine.common.config.server.ConnectorJarStorageConfig;
 import org.apache.seatunnel.engine.common.config.server.HttpConfig;
+import org.apache.seatunnel.engine.common.config.server.ServerConfigOptions;
 import org.apache.seatunnel.engine.common.config.server.SlotServiceConfig;
 import org.apache.seatunnel.engine.common.config.spec.ApplicationSpecification;
 import org.apache.seatunnel.engine.common.config.spec.WorkerSpecification;
@@ -172,6 +173,7 @@ public final class SeatunnelApplicationConfig {
                 config.get(ApplicationOptions.MASTER_MEMORY_MB),
                 config.get(ApplicationOptions.MASTER_CPU_CORES),
                 config.get(ApplicationOptions.MASTER_PORT),
+                config.get(ApplicationOptions.MASTER_HTTP_PORT),
                 config.get(ApplicationOptions.STARTUP_TIMEOUT_MILLIS));
     }
 
@@ -214,6 +216,11 @@ public final class SeatunnelApplicationConfig {
         properties.setProperty(
                 ApplicationOptions.MASTER_PORT.key(),
                 Integer.toString(specification.getMasterPort()));
+        if (specification.getMasterHttpPort() != null) {
+            properties.setProperty(
+                    ApplicationOptions.MASTER_HTTP_PORT.key(),
+                    Integer.toString(specification.getMasterHttpPort()));
+        }
         properties.setProperty(
                 ApplicationOptions.STARTUP_TIMEOUT_MILLIS.key(),
                 Long.toString(specification.getStartupTimeoutMillis()));
@@ -306,10 +313,14 @@ public final class SeatunnelApplicationConfig {
         ConnectorJarStorageConfig jars = new ConnectorJarStorageConfig();
         jars.setEnable(false);
         config.getEngineConfig().setConnectorJarStorageConfig(jars);
-        HttpConfig http = new HttpConfig();
-        http.setEnabled(false);
-        http.setEnableHttps(false);
-        config.getEngineConfig().setHttpConfig(http);
+        HttpConfig http = config.getEngineConfig().getHttpConfig();
+        if (worker) {
+            http = new HttpConfig();
+            http.setEnabled(false);
+            config.getEngineConfig().setHttpConfig(http);
+        }
+        http.setEnableDynamicPort(false);
+        http.setPortRange(ServerConfigOptions.MasterServerConfigOptions.PORT_RANGE.defaultValue());
         SlotServiceConfig slotConfig = new SlotServiceConfig();
         slotConfig.setDynamicSlot(false);
         slotConfig.setSlotNum(slots);

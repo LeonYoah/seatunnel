@@ -53,24 +53,22 @@ public final class HeadlessServiceDecorator extends AbstractKubernetesStepDecora
                 KubernetesResourceIdentity.metadata(
                         applicationId, applicationId, KubernetesConstants.MASTER_ROLE);
         int port = parameters.getSpecification().getMasterPort();
+        V1ServiceSpec spec =
+                new V1ServiceSpec()
+                        .clusterIP(KubernetesConstants.HEADLESS_CLUSTER_IP)
+                        .publishNotReadyAddresses(true)
+                        .selector(metadata.getLabels())
+                        .addPortsItem(
+                                new V1ServicePort()
+                                        .name(KubernetesConstants.HAZELCAST_PORT_NAME)
+                                        .port(port)
+                                        .targetPort(new IntOrString(port)));
         return Collections.singletonList(
                 new KubernetesService(
                         new V1Service()
                                 .apiVersion(KubernetesConstants.CORE_API_VERSION)
                                 .kind(KubernetesConstants.SERVICE_KIND)
                                 .metadata(metadata)
-                                .spec(
-                                        new V1ServiceSpec()
-                                                .clusterIP(KubernetesConstants.HEADLESS_CLUSTER_IP)
-                                                .publishNotReadyAddresses(true)
-                                                .selector(metadata.getLabels())
-                                                .addPortsItem(
-                                                        new V1ServicePort()
-                                                                .name(
-                                                                        KubernetesConstants
-                                                                                .HAZELCAST_PORT_NAME)
-                                                                .port(port)
-                                                                .targetPort(
-                                                                        new IntOrString(port))))));
+                                .spec(spec)));
     }
 }

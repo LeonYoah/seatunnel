@@ -97,6 +97,42 @@ class DefaultKubernetesClientTest {
     }
 
     @Test
+    void publishesMasterHttpServicePortAfterListenerBinds() throws Exception {
+        ApiClient client = new ApiClient();
+        client.setHttpClient(
+                new OkHttpClient.Builder()
+                        .addInterceptor(
+                                chain -> {
+                                    assertEquals("PATCH", chain.request().method());
+                                    assertEquals(
+                                            "/api/v1/namespaces/test/services/application",
+                                            chain.request().url().encodedPath());
+                                    assertEquals(
+                                            "application/json-patch+json",
+                                            chain.request().header("Content-Type"));
+                                    Buffer body = new Buffer();
+                                    chain.request().body().writeTo(body);
+                                    assertEquals(
+                                            "[{\"op\":\"add\",\"path\":\"/spec/ports/-\",\"value\":{\"name\":\"http\",\"port\":28080,\"targetPort\":18080,\"protocol\":\"TCP\"}}]",
+                                            body.readUtf8());
+                                    return new Response.Builder()
+                                            .request(chain.request())
+                                            .protocol(Protocol.HTTP_1_1)
+                                            .code(200)
+                                            .message("OK")
+                                            .body(
+                                                    ResponseBody.create(
+                                                            "{\"apiVersion\":\"v1\",\"kind\":\"Service\"}",
+                                                            MediaType.get("application/json")))
+                                            .build();
+                                })
+                        .build());
+        try (KubernetesClient api = new DefaultKubernetesClient(client, "test")) {
+            api.publishMasterHttpService("application", 28080, 18080);
+        }
+    }
+
+    @Test
     void retriesTransientPodListingFailures() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         CountDownLatch added = new CountDownLatch(1);

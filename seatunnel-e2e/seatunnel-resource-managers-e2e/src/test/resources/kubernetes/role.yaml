@@ -26,3 +26,6 @@ rules:
   - apiGroups: [batch]
     resources: [jobs]
     verbs: [get]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [patch]

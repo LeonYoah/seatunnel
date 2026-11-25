@@ -135,7 +135,8 @@ roleRef:
 kubectl apply -f application-rbac.yaml
 ```
 
-Replace the submitter subject with the identity that runs `bin/seatunnel-application.sh`.
+Replace the submitter subject with the identity that runs `bin/seatunnel-application.sh`. If you set
+`application.master.http-port`, also grant the master Role `patch` on Services.
 
 ## 3. Create the deployment configuration
 

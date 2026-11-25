@@ -105,6 +105,21 @@ class KubernetesResourceManagerDriverTest {
     }
 
     @Test
+    void publishMasterHttpDelegatesToTheKubernetesClient() throws Exception {
+        KubernetesClient api = mock(KubernetesClient.class);
+        try (KubernetesResourceManagerDriver driver =
+                new KubernetesResourceManagerDriver(
+                        api,
+                        KubernetesApplicationConfig.from(
+                                specification(), ReadonlyConfig.fromMap(new HashMap<>(options()))),
+                        "app",
+                        "isolated-app")) {
+            driver.publishMasterHttp(28080, 18080);
+            verify(api).publishMasterHttpService("app", 28080, 18080);
+        }
+    }
+
+    @Test
     void returnsPodIdentityAndReleasesOnlyOwnedWorkerOnce() throws Exception {
         KubernetesClient api = mock(KubernetesClient.class);
         ResourceEventHandler<KubernetesWorkerNode> events = mock(ResourceEventHandler.class);

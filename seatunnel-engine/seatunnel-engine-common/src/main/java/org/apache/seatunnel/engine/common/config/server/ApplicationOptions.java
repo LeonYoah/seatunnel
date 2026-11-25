@@ -92,4 +92,11 @@ public final class ApplicationOptions {
                     .intType()
                     .defaultValue(5801)
                     .withDescription("Hazelcast port advertised by the application master.");
+
+    public static final Option<Integer> MASTER_HTTP_PORT =
+            Options.key("application.master.http-port")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Master HTTP Service port published by the application platform. This does not configure the engine listener.");
 }

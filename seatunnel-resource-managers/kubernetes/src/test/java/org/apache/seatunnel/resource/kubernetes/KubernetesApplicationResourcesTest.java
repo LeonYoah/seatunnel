@@ -45,6 +45,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import io.kubernetes.client.openapi.models.V1ConfigMap;
+import io.kubernetes.client.openapi.models.V1ContainerPort;
 import io.kubernetes.client.openapi.models.V1EnvFromSource;
 import io.kubernetes.client.openapi.models.V1EnvVar;
 import io.kubernetes.client.openapi.models.V1Job;
@@ -1702,6 +1703,54 @@ class KubernetesApplicationResourcesTest {
         assertEquals(
                 "platform,batch",
                 KubernetesApplicationConfig.read(encoded).getWorkerAnnotations().get("team"));
+    }
+
+    @Test
+    void omitsHttpPortsBeforeMasterPublication() {
+        Map<String, String> options = options();
+        options.put(ApplicationOptions.MASTER_HTTP_PORT.key(), "18080");
+        ApplicationSpecification specification =
+                SeatunnelApplicationConfig.parse("env { job.mode = BATCH }", options);
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification, ReadonlyConfig.fromMap(new HashMap<>(options)));
+        List<KubernetesResource<?>> application =
+                KubernetesApplicationClusterDescriptor.assembleApplication(
+                        "app-http", mainClass, parameters);
+        V1Job job = applicationJob(application).getInternalResource();
+        List<V1ContainerPort> ports =
+                job.getSpec().getTemplate().getSpec().getContainers().get(0).getPorts();
+        assertTrue(ports == null || ports.isEmpty());
+        V1Service service =
+                accompanyingResources(application).stream()
+                        .filter(resource -> resource instanceof KubernetesService)
+                        .map(KubernetesService.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getInternalResource();
+        assertTrue(
+                service.getSpec().getPorts().stream()
+                        .noneMatch(
+                                port -> KubernetesConstants.HTTP_PORT_NAME.equals(port.getName())));
+    }
+
+    @Test
+    void masterHttpPortSurvivesLocalizedSpecification() throws Exception {
+        Map<String, String> options = options();
+        options.put(ApplicationOptions.MASTER_HTTP_PORT.key(), "18080");
+        ApplicationSpecification specification =
+                SeatunnelApplicationConfig.parse("env { job.mode = BATCH }", options);
+        KubernetesApplicationConfig parameters =
+                KubernetesApplicationConfig.from(
+                        specification, ReadonlyConfig.fromMap(new HashMap<>(options)));
+        StringWriter writer = new StringWriter();
+        parameters.write(writer);
+        String encoded =
+                Base64.getEncoder()
+                        .encodeToString(writer.toString().getBytes(StandardCharsets.UTF_8));
+        assertEquals(
+                Integer.valueOf(18080),
+                KubernetesApplicationConfig.read(encoded).getSpecification().getMasterHttpPort());
     }
 
     private static List<String> masterCommand(KubernetesApplicationConfig parameters) {
